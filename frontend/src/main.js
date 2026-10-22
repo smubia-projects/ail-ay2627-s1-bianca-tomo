@@ -1,13 +1,63 @@
 import {extractFile, splitText} from "./extract.js";
 
-// Where the backend lives. On Vercel this is set at build time with VITE_BACKEND_URL; on your own computer it's the same address.
-let API=(import.meta.env&&import.meta.env.VITE_BACKEND_URL)||"";
+// Where the backend lives: the Cloud Run URL, set at build time on Vercel with VITE_API_BASE (local dev: the Flask server).
+const ENV=import.meta.env||{};
+let API=ENV.VITE_API_BASE||(ENV.DEV?"http://localhost:5050":"");
 if(!/^https?:\/\//.test(API))API="";
 API=API.replace(/\/$/,"");
 
-
 const S={exam:[],practice:[],kind:null,mode:"teach_test",size:"section",depth:"standard",outline:null,slides:[],cfiles:[],lfiles:[],biwsMods:new Set(),biwsDefaults:false,level:"Beginner",focus:new Set(["Everyday conversation"]),step:-1};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+
+// ---------------------------------------------------------------- AI Lodge rate limit (429 CTA) and demo paused (503)
+const CTA={
+  name:"TOMO",emoji:"📚",accentColor:"#2aabee",
+  headline:"You've studied up a storm!",
+  description:"This demo built {count} study plans for you. In SMU BIA's AI Lodge, you'll learn to build AI tutors like TOMO from scratch.",
+  programme:"AI Lodge",programmeLink:"https://www.smubia.com/ai-lodge",
+  githubLink:"https://github.com/smubia-projects/ail-ay2627-s1-bianca-tomo",showcaseLink:"https://www.smubia.com/showcase",
+};
+class Handled extends Error{}  // a 429/503 that has already been shown to the user
+let lastFocus=null;
+function openOverlay(el){
+  lastFocus=document.activeElement;el.classList.add("open");
+  const f=el.querySelectorAll("a[href],button");if(f.length)setTimeout(()=>f[0].focus(),50);
+}
+function closeOverlay(el){el.classList.remove("open");if(lastFocus&&lastFocus.focus)lastFocus.focus()}
+function showRateLimit(count){
+  const el=$("#rl-overlay");
+  el.style.setProperty("--rl-accent",CTA.accentColor);
+  $("#rl-emoji").textContent=CTA.emoji;$("#rl-title").textContent=CTA.headline;
+  $("#rl-desc").textContent=CTA.description.replace("{count}",count);
+  $("#rl-join-label").textContent=`Join ${CTA.programme}`;
+  $("#rl-join").href=CTA.programmeLink;$("#rl-github").href=CTA.githubLink;$("#rl-showcase").href=CTA.showcaseLink;
+  openOverlay(el);
+}
+function showPaused(msg){$("#pause-msg").textContent=msg;openOverlay($("#pause-overlay"))}
+$("#rl-dismiss").onclick=()=>closeOverlay($("#rl-overlay"));
+$("#pause-ok").onclick=()=>closeOverlay($("#pause-overlay"));
+document.querySelectorAll(".rl-overlay").forEach(o=>{
+  o.addEventListener("click",e=>{if(e.target===o)closeOverlay(o)});
+  o.addEventListener("keydown",e=>{  // keep focus inside the dialog; Escape closes it
+    if(e.key==="Escape"){closeOverlay(o);return}
+    if(e.key!=="Tab")return;
+    const f=[...o.querySelectorAll("a[href],button")];if(!f.length)return;
+    if(e.shiftKey&&document.activeElement===f[0]){e.preventDefault();f[f.length-1].focus()}
+    else if(!e.shiftKey&&document.activeElement===f[f.length-1]){e.preventDefault();f[0].focus()}
+  });
+});
+// Every call to the backend goes through here: a 429 from the rate limiter opens the CTA (count from the server),
+// a 503 means the demo is paused (never the CTA). Other 429s (e.g. too many plans created) are ordinary errors.
+async function api(path,opts){
+  const r=await fetch(API+path,opts);
+  if(r.status===429||r.status===503){
+    let body={};try{body=await r.clone().json()}catch(e){}
+    const d=(body&&body.detail)||{};
+    if(r.status===503){const m=d.message||"This demo is temporarily paused. Check back soon.";showPaused(m);throw new Handled(m)}
+    if(d.queries_used!=null){showRateLimit(d.queries_used);throw new Handled("You've used this demo's free plan builds for now.")}
+  }
+  return r;
+}
 
 function show(n){
   S.step=n;
@@ -93,7 +143,7 @@ $$("[data-mode]").forEach(b=>b.onclick=()=>{S.mode=b.dataset.mode;$$("[data-mode
 // Breaking Into Wall Street is copyrighted, so online it only appears for someone who enters the private access code
 const biwsHeaders=()=>{let c="";try{c=sessionStorage.getItem("biws-code")||""}catch(e){}return c?{"X-Biws-Code":c}:{}};
 function loadBiws(){
-fetch(API+"/api/biws",{headers:biwsHeaders()}).then(r=>r.json()).then(b=>{
+api("/api/biws",{headers:biwsHeaders()}).then(r=>r.json()).then(b=>{
   $("#unlock").classList.toggle("hide",!b.locked);
   if(!b.available){$("#biws-opt").classList.add("hide");return}  // the guide is copyrighted, so it's only offered where its files exist
   $("#biws-opt").classList.remove("hide");
@@ -108,7 +158,7 @@ $("#unlock-btn").onclick=async()=>{
   const code=prompt("Enter your access code");
   if(!code)return;
   try{sessionStorage.setItem("biws-code",code.trim())}catch(e){}
-  const b=await (await fetch(API+"/api/biws",{headers:biwsHeaders()})).json();
+  const b=await (await api("/api/biws",{headers:biwsHeaders()})).json();
   if(b.available){loadBiws();alert("Unlocked. The Breaking Into Wall Street option is now on the list.")}
   else{try{sessionStorage.removeItem("biws-code")}catch(e){}alert("That code didn't work.")}
 };
@@ -132,7 +182,7 @@ async function sendFiles(id){
     working(`Reading ${file.name} (${i+1} of ${jobs.length})…`);
     const text=await extractFile(file);
     for(const part of splitText(file.name,text)){
-      const r=await fetch(API+`/api/plans/${id}/material`,{method:"POST",headers:JSONH,body:JSON.stringify({kind,name:part.name,text:part.text})});
+      const r=await api(`/api/plans/${id}/material`,{method:"POST",headers:JSONH,body:JSON.stringify({kind,name:part.name,text:part.text})});
       if(!r.ok){let m="Couldn't upload "+file.name;try{m=(await r.json()).error||m}catch(e){}throw new Error(m)}
     }
   }
@@ -147,13 +197,14 @@ $("#create").onclick=async()=>{
   else{Object.assign(body,{topic:$("#topic").value,scope:$("#scope").value,length:planLength()})}
   $("#create").disabled=true;
   try{
-    const r=await fetch(API+"/api/plans",{method:"POST",headers:{...JSONH,...biwsHeaders()},body:JSON.stringify(body)});const j=await r.json();
+    const r=await api("/api/plans",{method:"POST",headers:{...JSONH,...biwsHeaders()},body:JSON.stringify(body)});const j=await r.json();
     if(!r.ok){$("#err").textContent=j.error||"Something went wrong.";return}
     show(3);working("Getting started…");PID=j.id;
     await sendFiles(j.id);
     if(S.kind!=="biws"){
       working("Building your study plan… this can take up to a minute.");
-      try{await fetch(API+`/api/plans/${j.id}/build`,{method:"POST",headers:JSONH,body:"{}"})}catch(e){}  // if it times out, poll() reports what happened
+      // if it times out, poll() reports what happened; a rate limit or a paused demo stops here
+      try{await api(`/api/plans/${j.id}/build`,{method:"POST",headers:JSONH,body:"{}"})}catch(e){if(e instanceof Handled)throw e}
     }
     poll(j.id);
   }catch(e){
@@ -192,14 +243,14 @@ $("#units").addEventListener("click",e=>{
 $("#addu").onclick=()=>{readUnits();UNITS.push({week:UNITS.length+1,title:"",summary:"",files:[]});renderUnits();$$(".ucard .t").pop().focus()};
 $("#saveu").onclick=async()=>{
   readUnits();$("#savemsg").textContent="Saving…";
-  const r=await fetch(API+`/api/plans/${PID}/units`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({units:UNITS})});
+  const r=await api(`/api/plans/${PID}/units`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({units:UNITS})});
   const j=await r.json();
   $("#savemsg").innerHTML=r.ok?'<span class="ok">Saved ✓ The bot will use this plan.</span>':`<span class="err">${esc(j.error)}</span>`;
 };
 
 async function poll(id){
   PID=id;
-  const p=await (await fetch(API+"/api/plans/"+id)).json();
+  const p=await (await api("/api/plans/"+id)).json();
   if(p.status==="processing"){setTimeout(()=>poll(id),2500);return}
   $("#working").classList.add("hide");
   if(p.status==="error"){$("#failed").classList.remove("hide");$("#ferr").textContent=p.error;return}
@@ -212,7 +263,7 @@ async function poll(id){
   watch(id);
 }
 async function watch(id){
-  const p=await (await fetch(API+"/api/plans/"+id)).json();
+  const p=await (await api("/api/plans/"+id)).json();
   if(p.linked){$("#linked").classList.remove("hide");$("#tglink").classList.add("hide");return}
   setTimeout(()=>watch(id),3000);
 }
