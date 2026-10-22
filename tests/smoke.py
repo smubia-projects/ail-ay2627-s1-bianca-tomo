@@ -551,6 +551,43 @@ check("a failed session tells the learner plainly and doesn't move the plan on",
 A.build_session = _old_build
 check("there is no timed scheduler endpoint any more", c.get("/api/cron").status_code == 404)
 
+print("rate limits (shared engine)")
+import rate_limit as RL  # noqa: E402
+_rl = {"state": ("ok", None)}
+_rl_calls = []
+_real_status = RL.limiter.status
+RL.limiter.status = lambda ident, bucket: _rl_calls.append((ident, bucket)) or RL.RateLimitStatus(*_rl["state"])
+np_ = post("/api/plans", PLAN, ip="5.5.5.5").get_json()["id"]
+_rl["state"] = ("limited", 5)
+ai_calls.clear()
+r = post(f"/api/plans/{np_}/build", {}, ip="5.5.5.5, 10.0.0.1")
+check("building a plan over the limit is a 429 with queries_used, keyed on the visitor's IP, before any AI call",
+      r.status_code == 429 and r.get_json()["detail"]["queries_used"] == 5 and db.PLANS[np_]["status"] == "new"
+      and _rl_calls[-1] == ("5.5.5.5", "plan") and not ai_calls)
+_rl["state"] = ("killed", None)
+r = post(f"/api/plans/{np_}/build", {}, ip="5.5.5.5")
+check("a paused demo is a 503 with a message", r.status_code == 503 and "paused" in r.get_json()["detail"]["message"])
+check("reading a plan is never rate limited", c.get(f"/api/plans/{np_}", headers=H).status_code == 200)
+_rl["state"] = ("limited", 15)
+db.update_plan(pid, pending=None)
+_step0 = db.PLANS[pid]["step"]
+sent.clear()
+ai_calls.clear()
+webhook(upd(60, 55, "/next"))
+check("a Telegram learner over the limit gets the AI Lodge links (keyed on tg:<user id>) and no AI call",
+      any("smubia.com/ai-lodge" in t and "15" in t for c_, t in sent) and _rl_calls[-1] == ("tg:55", "session")
+      and db.PLANS[pid]["step"] == _step0 and not ai_calls)
+_rl["state"] = ("killed", None)
+sent.clear()
+webhook(upd(61, 55, "what is this about?"))
+check("a paused demo says so in the chat", any("paused" in t for c_, t in sent) and _rl_calls[-1] == ("tg:55", "reply")
+      and not ai_calls)
+_rl["state"] = ("ok", None)
+sent.clear()
+webhook(upd(62, 55, "/progress"))
+check("commands that need no AI are not counted", _rl_calls[-1] == ("tg:55", "reply") and len(sent) == 1)
+RL.limiter.status = _real_status
+
 print("the AI call and the daily cap")
 calls = []
 class R:

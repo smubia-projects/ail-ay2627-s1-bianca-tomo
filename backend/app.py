@@ -26,6 +26,7 @@ from flask import Flask, jsonify, request
 import biws
 import db
 from db import BudgetExceeded, update_plan
+from rate_limit import check_telegram, check_web, client_ip
 
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -623,6 +624,28 @@ def tutor_reply(plan, unit, msg):
     return reply
 
 
+# ---------------------------------------------------------------- rate limits for the bot (shared engine, per Telegram user)
+GITHUB_URL = "https://github.com/smubia-projects/ail-ay2627-s1-bianca-tomo"
+LIMIT_WHAT = {"session": "lessons and quizzes", "reply": "AI-checked answers and replies"}
+
+
+def bot_allowed(chat, bucket):
+    """Count one piece of AI work for this learner. Only private chats are handled, so the chat id is the user's id.
+    Returns False (after telling them) when the demo is paused or they've used their allowance."""
+    state, value = check_telegram(chat, bucket)
+    if state == "killed":
+        send(chat, "⏸ This TOMO demo is temporarily paused. Check back soon.")
+        return False
+    if state == "limited":
+        send(chat, f"🎓 You've used all {value} free {LIMIT_WHAT.get(bucket, 'AI requests')} in this TOMO demo for now.\n\n"
+                   "TOMO was built in SMU BIA's AI Lodge. Want to build AI tools like this?\n"
+                   "- Join AI Lodge: https://www.smubia.com/ai-lodge\n"
+                   f"- Run your own TOMO: {GITHUB_URL}\n"
+                   "- Explore other projects: https://www.smubia.com/showcase")
+        return False
+    return True
+
+
 # ---------------------------------------------------------------- telegram
 _http = requests.Session()  # reuses the connection to Telegram instead of reconnecting per message
 
@@ -913,6 +936,8 @@ def handle_voice(chat, v):
     if (v.get("duration") or 0) > 60 or (v.get("file_size") or 0) > 5_000_000:
         send(chat, "That one's a bit long for me. Please send a short voice message (a few seconds).")
         return
+    if not bot_allowed(chat, "reply"):
+        return
     tg("sendChatAction", chat_id=chat, action="typing")
     in_quiz = talk or bool(q and q.get("speak"))
     try:
@@ -1140,6 +1165,8 @@ def handle_callback(cq):
     if plan and data.startswith("more:"):
         idx = int(data.split(":")[1])
         unit = plan["units"][idx % len(plan["units"])]
+        if not bot_allowed(chat, "session"):
+            return
         tg("sendChatAction", chat_id=chat, action="typing")
         try:
             text, phrases = make_lesson(plan, unit, more=True)
@@ -1222,7 +1249,7 @@ def handle_callback(cq):
         update_plan(plan["id"], awaiting_feedback=True)
         send(chat, "Tell me what you'd like different, in your own words. e.g. 'more real-life scenarios', "
                    "'shorter explanations', 'test me on why, not just what'. (/cancel to skip)")
-    else:
+    elif bot_allowed(chat, "reply"):
         send(chat, merge_feedback(plan, {"easy": "The questions are too easy; make them harder and less obvious.",
                                          "hard": "The questions are too hard; make them easier, with clearer wording."}[kind]))
 
@@ -1306,6 +1333,8 @@ def grade_one(plan, unit, q, reply, tries=0):
 
 def start_quiz(plan, idx=None):
     """A quick quiz on the current topic (or on topic idx, from a lesson's Quiz button)."""
+    if not bot_allowed(plan["chat_id"], "session"):
+        return
     touch(plan["id"])
     if idx is None:
         idx = current_idx(plan)
@@ -1320,6 +1349,8 @@ def start_extra(plan, idx, n=None):
     """Extra practice on one topic. Doesn't move the plan forward."""
     if plan.get("pending"):
         send(plan["chat_id"], "Let's finish the current quiz first (or skip questions to leave it).")
+        return
+    if not bot_allowed(plan["chat_id"], "session"):
         return
     unit = plan["units"][idx % len(plan["units"])]
     tg("sendChatAction", chat_id=plan["chat_id"], action="typing")
@@ -1370,10 +1401,13 @@ FORMAT_PROMPTS = {
 }
 
 
+def guide_key(day, fmt, depth="standard"):
+    return f"guide:{day}:{fmt}:{depth if fmt in ('bite', 'section') else 'x'}"
+
+
 def guide_version(day, fmt, depth="standard"):
-    """A shorter version of a guide day, written once from the guide's text and cached on disk."""
-    depth = depth if fmt in ("bite", "section") else "x"
-    key = f"guide:{day}:{fmt}:{depth}"
+    """A shorter version of a guide day, written once from the guide's text and cached in the database."""
+    key = guide_key(day, fmt, depth)
     hit = db.cache_get(key)
     if hit is not None:
         return hit
@@ -1442,6 +1476,9 @@ def send_guide_lesson(plan, idx, fmt=None):
     fmt = fmt or fmt_for(plan)
     update_plan(plan["id"], bites=None)
     version = None
+    if fmt != "full" and db.cache_get(guide_key(day, fmt, plan.get("depth", "standard"))) is None \
+            and not bot_allowed(chat, "session"):
+        fmt = "full"  # the guide's own text needs no AI
     if fmt != "full":
         try:
             tg("sendChatAction", chat_id=chat, action="typing")
@@ -1544,6 +1581,9 @@ def deliver_next(plan):
     step = plan["step"]
     if plan.get("total_sessions") and step >= plan["total_sessions"] and plan["kind"] in ("custom", "language"):
         finish_plan(plan)  # (again, if they already finished: it offers to carry on)
+        return
+    guide_text_only = plan["kind"] == "biws" and plan["mode"] == "teach_test" and step % 2 == 0 and fmt_for(plan) == "full"
+    if not guide_text_only and not bot_allowed(plan["chat_id"], "session"):
         return
     plan = maybe_extend(plan)
     units = plan["units"]
@@ -1692,7 +1732,8 @@ def handle_message(msg):
         send(chat, "Okay, cancelled.")
         return
     if plan.get("awaiting_feedback") and not text.startswith("/"):
-        send(chat, merge_feedback(plan, text))
+        if bot_allowed(chat, "reply"):
+            send(chat, merge_feedback(plan, text))
         return
     if cmd == "/feedback":
         if text.lower().endswith("reset"):
@@ -1742,6 +1783,8 @@ def handle_message(msg):
         else:
             worst = min(hist, key=lambda h: h["score"] / h["n"])
             idx = next((i for i, u in enumerate(plan["units"]) if u["title"] == worst["topic"]), 0)
+            if not bot_allowed(chat, "session"):
+                return
             send(chat, f"Weakest topic so far: {worst['topic']} ({worst['score'] / worst['n']:.0%}).")
             tg("sendChatAction", chat_id=chat, action="typing")
             qs = make_quiz(plan, plan["units"][idx], review=False)
@@ -1803,6 +1846,8 @@ def handle_message(msg):
             send(chat, "This one needs a 🎤 voice message. Hold the mic button to record, or /skip.")
             return
         if q.get("type") == "talk" and not q.get("speak") and pend.get("await") != "choice":
+            if not bot_allowed(chat, "reply"):
+                return
             try:
                 pts, fb = judge_reply(plan, q, text)
             except Exception as e:
@@ -1815,6 +1860,8 @@ def handle_message(msg):
         k = pick_index(q, text) if q.get("opts") and pend.get("await") != "choice" else None
         if k is not None:
             answer_pick(plan, pend, k)
+            return
+        if not bot_allowed(chat, "reply"):
             return
         try:
             tries = pend.get("tries", 0)
@@ -1831,7 +1878,8 @@ def handle_message(msg):
         resolve(plan, pend, pts, text, fb, reveal=reveal)
     else:
         unit = plan["units"][max(0, plan["step"] - 1) // (2 if plan["mode"] == "teach_test" else 1) % len(plan["units"])]
-        send(chat, tutor_reply(plan, unit, text))
+        if bot_allowed(chat, "reply"):
+            send(chat, tutor_reply(plan, unit, text))
 
 
 def handle_update(u):
@@ -2060,10 +2108,6 @@ def bot_username():
     return BOT_USERNAME
 
 
-def client_ip():
-    return (request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "?")
-
-
 @app.post("/api/telegram")
 def telegram_webhook():
     if not secrets.compare_digest(request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""), webhook_secret()):
@@ -2212,6 +2256,9 @@ def build(pid):
         return jsonify(status="ready")
     if p["status"] == "processing" and time.time() - p.get("build_started", 0) < 150:
         return jsonify(status="processing"), 202
+    blocked = check_web("plan")  # 429 (with queries_used) or 503 (demo paused) before any AI call
+    if blocked:
+        return blocked
     update_plan(pid, status="processing", build_started=time.time(), error=None)
     try:
         build_plan(pid)
