@@ -1,6 +1,6 @@
 """Database layer.
 
-Production (Vercel): Postgres on Neon, set by DATABASE_URL. Serverless functions forget everything between requests, so
+Production (Cloud Run): Postgres on Neon, set by DATABASE_URL. Instances scale to zero and forget everything, so
 every piece of state lives here: plans, extracted course material, Telegram update ids, per-chat locks, cached AI output,
 daily usage. Local development: with no DATABASE_URL it uses a SQLite file, so you can run it on your computer with no setup.
 
@@ -223,20 +223,6 @@ def link_chat(pid, chat_id):
         return p
 
 
-def claim(pid, key, value):
-    """Set plan[key]=value only if it isn't already that. True for the one caller that wins (stops double deliveries)."""
-    with tx() as t:
-        r = t.q("SELECT data FROM plans WHERE id=%s FOR UPDATE", (pid,))
-        if not r:
-            return False
-        p = json.loads(r[0]["data"])
-        if p.get(key) == value:
-            return False
-        p[key] = value
-        t.x("UPDATE plans SET data=%s, updated=%s WHERE id=%s", (json.dumps(p), time.time(), pid))
-        return True
-
-
 # ---------------------------------------------------------------- extracted course material (the browser reads the files; only text is stored)
 def put_material(pid, kind, name, body):
     x("INSERT INTO materials (plan_id, kind, name, body) VALUES (%s,%s,%s,%s) ON CONFLICT (plan_id, kind, name) "
@@ -295,6 +281,20 @@ def prune(days=7):
     x("DELETE FROM updates WHERE at < %s", (time.time() - days * 86400,))
     x("DELETE FROM locks WHERE until < %s", (time.time(),))
     x("DELETE FROM counters WHERE until < %s", (time.time(),))
+
+
+_last_prune = 0.0
+
+
+def prune_now_and_then(every=3600):
+    """Clear out old update ids, locks and counters, at most once an hour per server instance."""
+    global _last_prune
+    if time.time() - _last_prune > every:
+        _last_prune = time.time()
+        try:
+            prune()
+        except Exception as e:
+            print("prune failed:", e, flush=True)
 
 
 @contextlib.contextmanager

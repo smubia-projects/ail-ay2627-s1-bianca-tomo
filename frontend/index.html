@@ -152,15 +152,15 @@
     <img class="hero-mascot" src="/mascot.svg" alt="TOMO, your study buddy">
     <h1>Hi I'm <span>TOMO</span><br>your study buddy on Telegram</h1>
     <p class="tomo-name"><b>T</b>est · <b>O</b>rganise · <b>M</b>aster · <b>O</b>wn it</p>
-    <p class="lead">Tell me what you want to learn and when you'd like to study. I'll send bite-size lessons and quizzes straight to your chat, then keep checking in so it all sticks.</p>
+    <p class="lead">Tell me what you want to learn. I'll turn it into bite-size lessons and quizzes in your Telegram chat: send /next whenever you're ready for the next one.</p>
     <div class="chat" aria-hidden="true">
-      <div class="b in">📖 Lesson 3/10: Cost Behaviour<small>Your quiz on this comes next session</small></div>
+      <div class="b in">📖 Lesson 3/10: Cost Behaviour<small>Send /next for your quiz on this</small></div>
       <div class="b in">Question 1/5<br>Why do fixed costs fall per unit as volume rises?</div>
       <div class="b out">Because the same total cost is spread over more units 🙌</div>
       <div class="b in">✅ Spot on! Want a harder one?</div>
     </div>
     <button class="btn big" id="go">Get started →</button>
-    <div class="feats"><span class="feat">📚 Lessons from your slides</span><span class="feat">📝 Exam-style quizzes</span><span class="feat">⏰ On your schedule</span><span class="feat">🎤 Voice practice for languages</span></div>
+    <div class="feats"><span class="feat">📚 Lessons from your slides</span><span class="feat">📝 Exam-style quizzes</span><span class="feat">⚡ Whenever you're ready</span><span class="feat">🎤 Voice practice for languages</span></div>
   </section>
 
   <!-- 1 -->
@@ -268,7 +268,7 @@
     <p class="hint">You can tweak all of this later from inside Telegram with /settings.</p>
     <div id="styleopts">
     <p class="hint hide" id="biws-style-note" style="margin-bottom:6px">Lessons come from your guide: <b>word for word</b> is the guide itself with its tables and screenshots; the other two are shorter versions written from it.</p>
-    <button class="opt sel" data-mode="teach_test"><b>📖 Teach me, then test me</b><span>A lesson one session, a quiz on it the next.</span></button>
+    <button class="opt sel" data-mode="teach_test"><b>📖 Teach me, then test me</b><span>A lesson, then a quiz on it the next time you send /next.</span></button>
     <button class="opt" data-mode="test_only"><b>📝 Test me only</b><span>I already know the content, just quiz me on each topic.</span></button>
     <label class="f">How much per session?</label>
     <button class="opt" data-size="concept"><b>One concept</b><span>Bite-size, about a 1-2 minute read. Each week is split into several small lessons.</span></button>
@@ -286,28 +286,19 @@
     <label class="f">What kinds of questions? <span class="hint">Pick as many as you like</span></label>
     <div class="chips" id="qtypes"></div>
 
-    <label class="f">Which days?</label>
-    <div class="chips" id="days"></div>
     <div id="dur-block">
-      <label class="f">How long do you want to keep going?</label>
+      <label class="f">How many lessons?</label>
       <div class="chips" id="durs">
-        <button class="chip" data-dur="1w">1 week</button>
-        <button class="chip" data-dur="2w">2 weeks</button>
-        <button class="chip sel" data-dur="1m">1 month</button>
-        <button class="chip" data-dur="3m">3 months</button>
-        <button class="chip" data-dur="forever">♾ Keep going, no end date</button>
+        <button class="chip" data-dur="5">5 lessons</button>
+        <button class="chip sel" data-dur="10">10 lessons</button>
+        <button class="chip" data-dur="20">20 lessons</button>
+        <button class="chip" data-dur="forever">♾ Keep going, no end</button>
         <button class="chip" data-dur="other">✏️ Other…</button>
       </div>
       <div id="dur-other" class="row wrap hide" style="margin-top:12px">
-        <div><label class="f" style="margin-top:0">For</label><input type="number" id="dur-n" min="1" max="730" value="10" style="width:100px"></div>
-        <div><label class="f" style="margin-top:0">&nbsp;</label><select id="dur-unit"><option value="d">days</option><option value="w">weeks</option><option value="m">months</option></select></div>
-        <div><label class="f" style="margin-top:0">…or finish on</label><input type="date" id="dur-date"></div>
+        <div><label class="f" style="margin-top:0">Lessons</label><input type="number" id="dur-n" min="1" max="200" value="15" style="width:100px"></div>
       </div>
       <p class="hint" id="dur-hint" style="margin-top:8px"></p>
-    </div>
-    <div class="row wrap">
-      <div><label class="f">Time</label><input type="time" id="time" value="18:00"></div>
-      <div><label class="f">Timezone</label><select id="tz"></select></div>
     </div>
     <div class="nav"><button class="btn ghost back">← Back</button><button class="btn next" id="create">Build my plan ✨</button></div>
     <div class="err" id="err"></div>
@@ -327,7 +318,7 @@
       <div class="connect">
         <img class="mini" src="/mascot.svg" alt=""><br>
         <b>Last step: connect Telegram</b>
-        <p class="hint" style="margin:6px 0 16px">Tap the button and press <b>Start</b> in the chat. Then I'll send you sessions on your schedule.</p>
+        <p class="hint" style="margin:6px 0 16px">Tap the button and press <b>Start</b> in the chat. Then send /next whenever you want your next session.</p>
         <a class="btn big" id="tglink" target="_blank" rel="noopener"><svg viewBox="0 0 24 24"><path fill="#fff" d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/></svg>Open Telegram</a>
         <div id="linked" class="connected hide"><span class="tick">✓</span><span class="ok">Connected! Check Telegram. You're all set.</span></div>
       </div>

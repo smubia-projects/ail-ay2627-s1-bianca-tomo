@@ -28,14 +28,14 @@ db.update_plan("p1", step=3, extra="x")
 check("update merges fields", db.PLANS["p1"]["step"] == 3 and db.PLANS["p1"]["course"] == "C")
 check("find by chat", [p["id"] for p in db.PLANS.for_chat(7)] == ["p1"] and db.PLANS.for_chat(8) == [])
 check("update of a missing plan is harmless", db.update_plan("zzz", a=1) is None)
-check("claim wins once", db.claim("p1", "last_sent", "2026-10-08") and not db.claim("p1", "last_sent", "2026-10-08") and db.claim("p1", "last_sent", "2026-10-09"))
+check("once() wins once per key", db.once("tap:a") and not db.once("tap:a") and db.once("tap:b"))
 
 wins = []
 def racer():
-    wins.append(db.claim("p1", "last_sent", "RACE"))
+    wins.append(db.once("tap:race"))
 ts = [threading.Thread(target=racer) for _ in range(8)]
 [t.start() for t in ts]; [t.join() for t in ts]
-check("8 simultaneous claims: exactly one wins", sum(wins) == 1)
+check("8 simultaneous taps: exactly one wins", sum(wins) == 1)
 def inc():
     for _ in range(5):
         with db.tx() as t:

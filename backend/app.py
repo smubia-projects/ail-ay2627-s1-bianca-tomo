@@ -2,7 +2,7 @@
 
 Serverless functions run only while a request is being handled, so nothing here keeps a thread or a file between requests:
   * Telegram sends each message to /api/telegram (a webhook) and we answer it there.
-  * A free pinger (or Vercel cron) calls /api/cron every minute, which sends whatever lessons and quizzes are due.
+  * Lessons and quizzes are sent on demand, when the learner sends /next (there is no timed scheduler).
   * Plans, the text of uploaded material and everything else live in the database (db.py).
 Run `python app.py` on your computer to develop: it uses a local SQLite file and polls Telegram instead of using a webhook.
 """
@@ -14,9 +14,8 @@ import re
 import secrets
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import requests
 from flask import Flask, jsonify, request, send_from_directory
@@ -1011,7 +1010,6 @@ def merge_feedback(plan, text):
     except Exception:
         prefs, reply = (prefs + [text[:200]])[-8:], "Got it, I'll keep that in mind from the next lesson and quiz."
     update_plan(plan["id"], prefs=prefs, awaiting_feedback=False)
-    clear_prefetch(plan["id"])
     return reply
 
 
@@ -1087,8 +1085,6 @@ def handle_callback(cq):
             pass
         elif parts[1] == "noop":
             return
-        if parts[1] != "menu":
-            clear_prefetch(plan["id"])
         text, markup = settings_view(load()[plan["id"]])
         if parts[1] == "menu":
             tg("sendMessage", chat_id=chat, text=text, reply_markup=markup)
@@ -1193,8 +1189,6 @@ def advance(plan, pend, points, answer="", fb=""):
             except Exception as e:
                 print("analysis error:", e)
         feedback_buttons(plan["chat_id"], pend["unit"])
-        nxt = load()[plan["id"]]
-        clear_prefetch(plan["id"])  # the next session is rebuilt with today's mistakes in mind
         update_plan(plan["id"], pending=None, speak_target=None)
     else:
         update_plan(plan["id"], pending=pend)
@@ -1239,7 +1233,7 @@ def start_quiz(plan, idx=None):
 
 
 def start_extra(plan, idx, n=None):
-    """Extra practice on one topic. Doesn't move the schedule forward."""
+    """Extra practice on one topic. Doesn't move the plan forward."""
     if plan.get("pending"):
         send(plan["chat_id"], "Let's finish the current quiz first (or skip questions to leave it).")
         return
@@ -1429,29 +1423,9 @@ def _build(plan, step):
     return ("quiz", make_quiz(plan, unit, round_no)) if is_quiz else ("lesson",) + make_lesson(plan, unit)
 
 
-def prefetch(plan, step):
-    """Write a session ahead of time so it can be sent the moment it's due. Called by the cron tick shortly before a session."""
-    if plan.get("kind") == "biws":
-        return  # the guide's lessons need no AI, and shorter versions are written (then cached) when first asked for
-    if plan.get("total_sessions") and step >= plan["total_sessions"]:
-        return
-    plan = maybe_extend(plan)
-    key = f"prep:{plan['id']}:{step}"
-    if db.cache_get(key) is not None:
-        return
-    try:
-        db.cache_put(key, list(_build(plan, step)))
-    except Exception as e:
-        print("prefetch failed:", e, flush=True)
-
-
-def get_prepared(plan, step):
-    val = db.cache_pop(f"prep:{plan['id']}:{step}")
-    return val if val else _build(plan, step)
-
-
-def clear_prefetch(pid):  # preferences and plan edits make prepared content stale
-    db.cache_clear(f"prep:{pid}:")
+def build_session(plan, step):
+    """Write the lesson or quiz for this step of the plan (on demand, when the learner asks for it)."""
+    return _build(plan, step)
 
 
 def lesson_buttons(idx):
@@ -1478,15 +1452,14 @@ def settings_view(plan):
             f"questions per quiz, then the kinds of questions (tap to switch on or off). Changes apply from the next lesson or quiz."), {"inline_keyboard": rows}
 
 
-def deliver_next(plan, silent_retry=False):
-    """Send the next scheduled item (lesson or quiz) and advance the plan."""
+def deliver_next(plan):
+    """Send the next item of the plan (lesson or quiz) and advance it. Runs when the learner sends /next."""
     units = plan["units"]
     if not units:
         return
     step = plan["step"]
     if plan.get("total_sessions") and step >= plan["total_sessions"] and plan["kind"] in ("custom", "language"):
-        if not plan.get("finished"):
-            finish_plan(plan)
+        finish_plan(plan)  # (again, if they already finished: it offers to carry on)
         return
     plan = maybe_extend(plan)
     units = plan["units"]
@@ -1510,11 +1483,11 @@ def deliver_next(plan, silent_retry=False):
             send_guide_lesson(plan, idx)
             update_plan(plan["id"], pending=None, speak_target=None, chat=[], step=step + 1)
             return
-        got = get_prepared(plan, step)
+        got = build_session(plan, step)
         if not is_quiz:
             _, text, phrases = got
             send(chat, f"📖 {plan['course']}\nLesson {idx+1}/{n}: {label}{unit['title']}\n\n{text}\n\n"
-                       f"Your quiz on this comes next session. Ask me anything meanwhile, or /quiz to be tested now.",
+                       f"Send /next for your quiz on this when you're ready. Ask me anything meanwhile.",
                  lesson_buttons(idx))
             for ph in phrases:
                 send_phrase_audio(chat, plan, ph)
@@ -1535,11 +1508,7 @@ def deliver_next(plan, silent_retry=False):
             arm_quiz(plan, idx, qs)
     except Exception as e:  # don't advance on failure
         print("deliver failed:", plan["id"], e, flush=True)
-        if silent_retry and db.bump(f"retry:{plan['id']}:{datetime.now().date().isoformat()}", 2, 4 * 3600):
-            update_plan(plan["id"], last_sent=None)  # free today's slot: the next minute's tick tries again, quietly
-            return
-        send(chat, "⚠️ I couldn't prepare this session just now" + quota_note(e) + ". Send /next to try again, or I'll try "
-                   "again at your next scheduled time.")
+        send(chat, "⚠️ I couldn't prepare this session just now" + quota_note(e) + ". Send /next to try again in a moment.")
         return
     update_plan(plan["id"], step=step + 1)
 
@@ -1547,28 +1516,23 @@ def deliver_next(plan, silent_retry=False):
 BIWS_HELP = (
     "📌 COMMANDS\n\n"
     "How it works\n"
-    "On your schedule I send a lesson from your Breaking Into Wall Street guide (word for word, condensed or bite-size, "
-    "as you chose), then a quiz on it. You can also type /question any time to be tested.\n\n"
-    "Learn\n/today - resend today's reading\n/next - jump to the next lesson now\n/back - the previous lesson\n"
+    "Send /next and I send a lesson from your Breaking Into Wall Street guide (word for word, condensed or bite-size, "
+    "as you chose); send /next again for a quiz on it. You can also type /question any time to be tested.\n\n"
+    "Learn\n/next - the next lesson or quiz\n/today - resend today's reading\n/back - the previous lesson\n"
     "/goto 12 - jump to lesson 12\n(just type any question to chat with me about today's topic)\n\n"
     "Get tested\n/question - practice questions on today's topic (plus a review question from earlier)\n"
     "/skip - skip the current question\n/done - stop the quiz\n/review - quiz me on my weakest topic\n"
     "/more - extra questions on this topic\n\n"
-    "Plan and progress\n/plan - the roadmap and where you are\n/schedule - the next lessons and their dates\n"
-    "/progress - your scores\n\n"
-    "Busy? Change the schedule\n/resched - skip the next lesson (everything shifts)\n/resched undo - take back the skip\n"
-    "/pause and /resume\n/time 7:30am - change the delivery time\n/days mon-sat - change the days\n"
-    "/timezone Asia/Manila - set your timezone\n"
+    "Plan and progress\n/plan - the roadmap and where you are\n/progress - your scores\n"
     "/settings - lesson size (word for word, condensed, bite-size), depth, questions per quiz\n/feedback - tell me how to adjust"
 )
 
 GENERIC_HELP = (
-    "📌 COMMANDS\n\n/next - the next session now\n/quiz - test me on the current topic\n/more - extra questions on this topic\n"
-    "/skip - skip a question (or tap Skip)\n/done - stop the quiz\n/review - quiz me on my weakest topic\n"
-    "/progress - your scores\n/plan - the roadmap\n/schedule - upcoming sessions\n/settings - lesson size, depth, questions\n"
-    "/feedback - tell me how to adjust\n/plans and /switch 2 - if you're learning several things\n"
-    "/pause and /resume\n/resched - skip the next session\n/time 7:30am - change the time\n/days mon-sat - change the days\n"
-    "/timezone Asia/Manila - set your timezone"
+    "📌 COMMANDS\n\n/next - the next session (a lesson, then its quiz)\n/quiz - test me on the current topic\n"
+    "/more - extra questions on this topic\n/skip - skip a question (or tap Skip)\n/done - stop the quiz\n"
+    "/review - quiz me on my weakest topic\n/progress - your scores\n/plan - the roadmap\n/status - where I am\n"
+    "/settings - lesson size, depth, questions\n/feedback - tell me how to adjust\n"
+    "/plans and /switch 2 - if you're learning several things"
 )
 
 
@@ -1576,70 +1540,10 @@ def biws_welcome(p):
     chat = p["chat_id"]
     send(chat, f"👋 Hi, I'm TOMO! I'm your IB interview tutor, built from your Breaking Into Wall Street guide.\n\n{BIWS_HELP}")
     if p["step"] == 0:
-        send(chat, f"Let's begin. {describe_schedule(p)}\nHere's Day 1:")
-        update_plan(p["id"], last_sent=datetime.now(ZoneInfo(p["schedule"]["tz"])).date().isoformat())
+        send(chat, f"Let's begin. {describe_plan(p)}\nHere's Day 1:")
         deliver_next(load()[p["id"]])
     else:
         send(chat, f"Welcome back. You're on lesson {current_idx(p) + 1} of {len(p['units'])}. /today resends it.")
-
-
-def parse_clock(t):
-    m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", t.strip().lower())
-    if not m:
-        return None
-    h, mi, ap = int(m.group(1)), int(m.group(2) or 0), m.group(3)
-    if ap == "pm" and h < 12:
-        h += 12
-    if ap == "am" and h == 12:
-        h = 0
-    return f"{h:02d}:{mi:02d}" if h < 24 and mi < 60 else None
-
-
-def parse_days(t):
-    names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-    t = t.lower().replace("weekdays", "mon-fri").replace("daily", "mon-sun").replace("everyday", "mon-sun")
-    out = set()
-    for tok in re.split(r"[,\s]+", t.strip()):
-        if not tok:
-            continue
-        if "-" in tok:
-            a, b = (x[:3] for x in tok.split("-", 1))
-            if a in names and b in names:
-                i, j = names.index(a), names.index(b)
-                out |= set(range(i, j + 1)) if i <= j else set(range(i, 7)) | set(range(0, j + 1))
-                continue
-            return None
-        if tok[:3] not in names:
-            return None
-        out.add(names.index(tok[:3]))
-    return sorted(out) or None
-
-
-def session_label(plan, step):
-    n = len(plan["units"])
-    if plan["kind"] == "biws" and plan["mode"] == "teach_test" and step >= 2 * n:
-        return None
-    idx, is_quiz, _ = step_info(plan, step)
-    return f"{'Quiz' if is_quiz else 'Lesson'}: {plan['units'][idx]['title']}"
-
-
-def upcoming(plan, count=7):
-    s, now = plan["schedule"], datetime.now(ZoneInfo(plan["schedule"]["tz"]))
-    h, m = map(int, s["time"].split(":"))
-    out, step = [], plan["step"]
-    for off in range(0, 60):
-        d = now + timedelta(days=off)
-        slot = d.replace(hour=h, minute=m, second=0, microsecond=0)
-        if d.weekday() not in s["days"] or (off == 0 and (slot < now or plan.get("last_sent") == now.date().isoformat())):
-            continue
-        label = session_label(plan, step)
-        if label is None:
-            break
-        out.append(f"{slot.strftime('%a %d %b')} {s['time']}: {label}")
-        step += 1
-        if len(out) >= count:
-            break
-    return out
 
 
 def plan_overview(plan):
@@ -1679,12 +1583,12 @@ def handle_message(msg):
                 biws_welcome(p)
                 return
             say = "\n/say - practise speaking" if p.get("voice") else ""
-            send(chat, f"✅ Connected! I'm TOMO, your tutor for: {p['course']}.\n\n{describe_schedule(p)}\n\n"
+            send(chat, f"✅ Connected! I'm TOMO, your tutor for: {p['course']}.\n\n{describe_plan(p)}\n\n"
                        "📌 Commands\n\n"
-                       "Learn\n/next - next session now\n/more - extra questions on the current topic" + say + "\n\n"
+                       "Learn\n/next - the next session\n/more - extra questions on the current topic" + say + "\n\n"
                        "Get tested\n/quiz - test me on the current topic\nskip - skip a question (or tap Skip)\n\n"
                        "Your plan\n/progress - your scores\n/settings - lesson size, depth, questions\n/questions - questions per quiz\n"
-                       "/feedback - tell me how to adjust\n/status\n/pause and /resume\n\n"
+                       "/feedback - tell me how to adjust\n/status\n\n"
                        "Learning several things?\n/plans - list them\n/switch 2 - change which one these commands use\n\n"
                        "Everything: /help")
         else:
@@ -1741,13 +1645,10 @@ def handle_message(msg):
             return
         touch(plan["id"])
         send_guide_lesson(plan, target)
-        # after re-reading lesson N, the next scheduled session is its quiz (or, quiz-only, that topic's quiz)
+        # after re-reading lesson N, the next session (/next) is its quiz (or, quiz-only, that topic's quiz)
         update_plan(plan["id"], step=(2 * target + 1) if plan["mode"] == "teach_test" else target, pending=None, chat=[])
     elif cmd == "/plan":
         send(chat, plan_overview(plan))
-    elif cmd == "/schedule":
-        up = upcoming(plan)
-        send(chat, "📅 Coming up\n" + "\n".join(up) if up else "Nothing scheduled. You've reached the end of the plan.")
     elif cmd == "/review":
         hist = [h for h in (plan.get("history") or []) if h.get("n")]
         if plan.get("pending"):
@@ -1762,40 +1663,6 @@ def handle_message(msg):
             qs = make_quiz(plan, plan["units"][idx], review=False)
             send(chat, f"📝 Review quiz: {plan['units'][idx]['title']}\n\n{len(qs)} questions, one at a time.")
             arm_quiz(plan, idx, qs)
-    elif cmd == "/time":
-        t = parse_clock(" ".join(text.split()[1:]))
-        if t:
-            sch = dict(plan["schedule"], time=t)
-            update_plan(plan["id"], schedule=sch)
-            send(chat, "⏰ Done. " + describe_schedule(dict(plan, schedule=sch)))
-        else:
-            send(chat, "Tell me a time, e.g. /time 7:30am or /time 17:00")
-    elif cmd == "/timezone":
-        try:
-            tz = text.split()[1]
-            ZoneInfo(tz)
-            sch = dict(plan["schedule"], tz=tz)
-            update_plan(plan["id"], schedule=sch)
-            send(chat, "🌏 Done. " + describe_schedule(dict(plan, schedule=sch)))
-        except Exception:
-            send(chat, "Use a timezone name like /timezone Asia/Manila or /timezone America/New_York")
-    elif cmd == "/days":
-        d = parse_days(" ".join(text.split()[1:]))
-        if d:
-            sch = dict(plan["schedule"], days=d)
-            update_plan(plan["id"], schedule=sch)
-            send(chat, "📆 Done. " + describe_schedule(dict(plan, schedule=sch)))
-        else:
-            send(chat, "Tell me the days, e.g. /days mon-sat or /days mon wed fri")
-    elif cmd == "/resched":
-        today = datetime.now(ZoneInfo(plan["schedule"]["tz"])).date().isoformat()
-        if text.lower().endswith("undo"):
-            update_plan(plan["id"], last_sent=None)
-            send(chat, "Skip taken back.")
-        else:
-            update_plan(plan["id"], last_sent=today)
-            up = upcoming(dict(plan, last_sent=today), 1)
-            send(chat, "⏭ Skipped today. Next up: " + (up[0] if up else "nothing left"))
     elif cmd == "/more":
         arg = text.split()[1] if len(text.split()) > 1 else ""
         start_extra(plan, current_idx(plan), int(arg) if arg.isdigit() and 1 <= int(arg) <= 15 else None)
@@ -1824,24 +1691,20 @@ def handle_message(msg):
         if cmd == "/switch" and arg.isdigit() and 1 <= int(arg) <= len(mine):
             plan = mine[int(arg) - 1]
             touch(plan["id"])
-            send(chat, f"Switched to: {plan['course']}\n{describe_schedule(plan)}")
+            send(chat, f"Switched to: {plan['course']}\n{describe_plan(plan)}")
             return
         cur = plan["id"]
-        lines = [f"{'▶️' if p['id'] == cur else '  '} {i}. {p['course']}{' (paused)' if p.get('paused') else ''}"
+        lines = [f"{'▶️' if p['id'] == cur else '  '} {i}. {p['course']}"
                  for i, p in enumerate(mine, 1)]
         send(chat, "Your plans:\n" + "\n".join(lines) + "\n\nUse /switch <number> to change which one /next, /quiz, "
-                   "/status and your replies apply to. /pause and /resume apply to the one marked ▶️.")
+                   "/status and your replies apply to.")
     elif cmd == "/say":
         if not plan.get("voice"):
             send(chat, "Voice practice isn't switched on for this plan.")
             return
         offer_phrase(plan)
-    elif cmd == "/pause":
-        update_plan(plan["id"], paused=True); send(chat, "⏸ Paused. /resume to continue.")
-    elif cmd == "/resume":
-        update_plan(plan["id"], paused=False); send(chat, "▶️ Resumed.\n" + describe_schedule(plan))
     elif cmd == "/status":
-        send(chat, f"{plan['course']}\n{describe_schedule(plan)}\nProgress: session {plan['step']} done "
+        send(chat, f"{plan['course']}\n{describe_plan(plan)}\nProgress: session {plan['step']} done "
                    f"({len(plan['units'])} topics).")
     elif cmd == "/next":
         deliver_next(plan)
@@ -1909,6 +1772,7 @@ def handle_update(u):
 
 def process_update(u):
     """Entry point for the webhook (and for local polling): drop repeats, and handle one chat's messages one at a time."""
+    db.prune_now_and_then()
     uid = u.get("update_id")
     if uid is not None and not db.first_time(uid):
         return  # Telegram re-sent an update we've already dealt with
@@ -1937,21 +1801,21 @@ def process_update(u):
         print("chat busy, dropped update", uid, flush=True)
 
 
-# ---------------------------------------------------------------- scheduler
-DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-
-DURATIONS = {"1w": 1, "2w": 2, "1m": 4, "3m": 13, "forever": 0}  # weeks (forever: no end)
-DUR_TEXT = {"1w": "for 1 week", "2w": "for 2 weeks", "1m": "for 1 month", "3m": "for 3 months", "forever": "with no end date (until you pause it)"}
+# ---------------------------------------------------------------- plan length (sessions are sent on demand with /next)
 FIRST_BATCH = 12  # lessons written up front; the rest are written as the learner gets near them
+MORE_LESSONS = 10  # added when the learner chooses to carry on after finishing
 
 
-def describe_schedule(p):
-    s = p["schedule"]
-    what = "a lesson, then a quiz on it, alternating" if p["mode"] == "teach_test" else "a quiz"
-    when = f" {DUR_TEXT[p['duration']]}" if p.get("duration") in DUR_TEXT else (
-        f" for {p['duration_days']} days" if p.get("duration") == "custom" and p.get("duration_days") else "")
-    return f"Schedule: {what} every {', '.join(DAYS[d] for d in sorted(s['days']))} at {s['time']} ({s['tz']}){when}."
+def describe_plan(p):
+    what = ("a lesson, then a quiz on it when you send /next again" if p["mode"] == "teach_test"
+            else "a quiz on the next topic")
+    if p.get("duration") == "forever":
+        length = " There's no end date: I'll keep writing new lessons as you go."
+    elif p.get("target_lessons"):
+        length = f" Your plan has {p['target_lessons']} lessons."
+    else:
+        length = ""
+    return f"How it works: send /next whenever you're ready and I'll send {what}.{length}"
 
 
 def extend_units(plan, n=10):
@@ -2001,79 +1865,25 @@ def finish_plan(plan):
     update_plan(plan["id"], finished=True)
     send(plan["chat_id"], f"🎉 You've finished your plan: {plan['course']}! That's {plan['step']} sessions.{avg}\n\n"
                           "Want to keep going? I'll carry on from where you are and keep making new lessons.",
-         {"inline_keyboard": [[{"text": "➕ 1 more month", "callback_data": "ext:1m"}],
+         {"inline_keyboard": [[{"text": f"➕ {MORE_LESSONS} more lessons", "callback_data": "ext:more"}],
                               [{"text": "♾ Keep going, no end date", "callback_data": "ext:forever"}],
                               [{"text": "🏁 That's enough for now", "callback_data": "ext:stop"}]]})
 
 
 def extend_plan(plan, how):
     if how == "stop":
-        update_plan(plan["id"], paused=True)
-        send(plan["chat_id"], "Well done! I've paused your plan. /resume or /next any time to carry on.")
+        send(plan["chat_id"], "Well done! Your plan stays here: send /next any time if you want to carry on.")
         return
     if how == "forever":
         update_plan(plan["id"], duration="forever", target_lessons=None, total_sessions=None, finished=False)
         send(plan["chat_id"], "♾ No end date. I'll keep writing new lessons as you go. You can /pause any time.")
     else:
-        days = len(plan["schedule"]["days"])
-        add = 4 * days
-        lessons = max(2, add // 2) if plan["mode"] == "teach_test" else max(2, add)
-        update_plan(plan["id"], target_lessons=(plan.get("target_lessons") or len(plan["units"])) + lessons,
-                    total_sessions=(plan.get("total_sessions") or plan["step"]) + add, finished=False,
-                    duration=plan.get("duration") if plan.get("duration") != "forever" else None)
-        send(plan["chat_id"], "➕ Another month added. Your next lesson is on its way on your usual days.")
+        add = MORE_LESSONS * (2 if plan["mode"] == "teach_test" else 1)
+        update_plan(plan["id"], target_lessons=(plan.get("target_lessons") or len(plan["units"])) + MORE_LESSONS,
+                    total_sessions=(plan.get("total_sessions") or plan["step"]) + add, finished=False, duration=None)
+        send(plan["chat_id"], f"➕ {MORE_LESSONS} more lessons added. Send /next when you're ready.")
     tg("sendChatAction", chat_id=plan["chat_id"], action="typing")
     maybe_extend(load()[plan["id"]])
-
-
-def cron_tick(start_by=25.0):
-    """Send whatever is due right now. Called every minute by the pinger (or Vercel cron).
-
-    Each run has a time limit, so it only STARTS new work during the first `start_by` seconds. A plan that has to wait is
-    simply picked up by the next tick (a session stays due for 3 hours)."""
-    t0 = time.time()
-    db.ensure_schema()
-    db.prune()
-    due, soon = [], []
-    for p in load().values():
-        try:
-            if not p.get("chat_id") or p.get("paused") or p.get("finished") or p["status"] != "ready" or not p["units"]:
-                continue
-            s = p["schedule"]
-            now = datetime.now(ZoneInfo(s["tz"]))
-            today = now.date().isoformat()
-            h, m = map(int, s["time"].split(":"))
-            at = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            if now.weekday() not in s["days"] or p.get("last_sent") == today:
-                continue
-            if at <= now < at + timedelta(hours=3):
-                due.append((p["id"], today))
-            elif at - timedelta(minutes=10) <= now < at:
-                soon.append(p)
-        except Exception as e:
-            print("cron: skipping", p.get("id"), e, flush=True)
-
-    def deliver(pid, today):
-        if time.time() - t0 > start_by or not db.claim(pid, "last_sent", today):  # claim = only one run sends it
-            return 0
-        try:
-            with db.lease(f"chat:{load()[pid]['chat_id']}", ttl=90, wait=20):
-                deliver_next(load()[pid], silent_retry=True)
-            return 1
-        except Exception as e:
-            print("cron: delivery failed", pid, e, flush=True)
-            return 0
-
-    def prepare(p):
-        if time.time() - t0 <= start_by:
-            prefetch(p, p["step"])
-            return 1
-        return 0
-
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        sent = sum(ex.map(lambda a: deliver(*a), due))
-        prepared = sum(ex.map(prepare, soon))
-    return {"due": len(due), "sent": sent, "prepared": prepared, "seconds": round(time.time() - t0, 1)}
 
 
 # ---------------------------------------------------------------- web API
@@ -2159,15 +1969,6 @@ def telegram_webhook():
     return "ok"
 
 
-@app.route("/api/cron", methods=["GET", "POST"])
-def cron():
-    if not CRON_SECRET:
-        return jsonify(error="CRON_SECRET isn't set on the server."), 503
-    if not secret_ok():
-        return jsonify(error="Not allowed."), 403
-    return jsonify(cron_tick())
-
-
 @app.route("/api/setup", methods=["GET", "POST"])
 def setup():
     """Point Telegram at this server. Open it once after deploying: /api/setup?key=YOUR_CRON_SECRET"""
@@ -2198,7 +1999,7 @@ def diag_tts():
 @app.get("/api/health")
 def health():
     db.q("SELECT 1 AS ok")
-    return jsonify(ok=True, ai=llm, bot=bool(TOKEN), cron=bool(CRON_SECRET), database="postgres" if db.IS_PG else "sqlite")
+    return jsonify(ok=True, ai=llm, bot=bool(TOKEN), database="postgres" if db.IS_PG else "sqlite")
 
 
 @app.post("/api/plans")
@@ -2210,15 +2011,6 @@ def create_plan():
     kind = f.get("kind")
     if kind not in ("smu", "custom", "language", "biws"):
         return jsonify(error="Pick what you want to learn."), 400
-    try:
-        days = f.get("days", [])
-        days = sorted({int(d) for d in (days.split(",") if isinstance(days, str) else days) if str(d) != ""})
-        ZoneInfo(f.get("tz", ""))
-        datetime.strptime(f.get("time", ""), "%H:%M")
-    except Exception:
-        return jsonify(error="Please choose valid days, a time and a timezone."), 400
-    if not days or any(not 0 <= d <= 6 for d in days):
-        return jsonify(error="Pick at least one day."), 400
     str_ = lambda k, n: str(f.get(k) or "").strip()[:n]
     if kind == "biws":
         if not biws_ok():
@@ -2240,8 +2032,7 @@ def create_plan():
         load()[pid] = dict(id=pid, kind="biws", topic=biws.TITLE, scope="", notes=str_("notes", 1500), lessons=None,
                            mode=mode, size=size, depth=depth, nq=nq, qtypes=clean_qtypes(f.get("qtypes"), "biws"), voice=False, language=None, speak_target=None,
                            phrases={}, missed=[], prefs=[], weak=[], history=[], awaiting_feedback=False, course=biws.TITLE,
-                           units=units, status="ready", step=0, chat_id=None, paused=False, pending=None, last_sent=None,
-                           schedule=dict(days=days, time=f["time"], tz=f["tz"]))
+                           units=units, status="ready", step=0, chat_id=None, pending=None)
         return jsonify(id=pid)
     size, depth = f.get("size", "section"), f.get("depth", "standard")
     if size not in SIZES or depth not in DEPTHS:
@@ -2268,28 +2059,26 @@ def create_plan():
         lessons = int(f.get("lessons") or 0) or None
     except (ValueError, TypeError):
         lessons = None
-    dur = f.get("duration") if f.get("duration") in DURATIONS or f.get("duration") == "custom" else None
-    target = total = None
-    dur_days = None
-    if dur == "custom":
+    # how long the plan runs: a number of lessons, or "forever" (new lessons are written as the learner goes)
+    dur = target = total = None
+    length = f.get("length")
+    if length == "forever":
+        dur, lessons = "forever", 10
+    elif length not in (None, ""):
         try:
-            dur_days = max(1, min(730, int(f.get("duration_days"))))
+            target = int(length)
         except (ValueError, TypeError):
-            return jsonify(error="Tell me how long you want to keep going."), 400
-    if dur == "forever":
-        lessons = 10  # then the next ones are written as the learner goes
-    elif dur:
-        sessions = max(2, round(dur_days * len(days) / 7)) if dur == "custom" else DURATIONS[dur] * len(days)
-        target = max(2, sessions // 2) if mode == "teach_test" else max(2, sessions)
+            return jsonify(error="How many lessons would you like?"), 400
+        if not 1 <= target <= 200:
+            return jsonify(error="Choose between 1 and 200 lessons."), 400
         total = target * (2 if mode == "teach_test" else 1)
         lessons = min(target, FIRST_BATCH)
     pid = secrets.token_hex(5)
     load()[pid] = dict(id=pid, kind=kind, topic=topic, scope=scope, notes=str_("notes", 1500), lessons=lessons, mode=mode,
                        size=size, depth=depth, nq=nq, qtypes=clean_qtypes(f.get("qtypes"), kind), voice=True, language=None, speak_target=None, phrases={}, missed=[],
                        prefs=[], weak=[], history=[], awaiting_feedback=False, course="", units=[], status="new", step=0,
-                       chat_id=None, paused=False, pending=None, last_sent=None, duration=dur, duration_days=dur_days, target_lessons=target,
-                       total_sessions=total, finished=False,
-                       schedule=dict(days=days, time=f["time"], tz=f["tz"]))
+                       chat_id=None, pending=None, duration=dur, target_lessons=target,
+                       total_sessions=total, finished=False)
     return jsonify(id=pid)
 
 
@@ -2386,8 +2175,7 @@ def edit_units(pid):
             except (KeyError, ValueError, TypeError, IndexError):
                 return jsonify(error="Every topic in this plan comes from the guide, so new topics can't be added."), 400
         units.append(unit)
-    update_plan(pid, units=units, pending=None)
-    clear_prefetch(pid)  # indexes may have shifted, so drop any open quiz
+    update_plan(pid, units=units, pending=None)  # indexes may have shifted, so drop any open quiz
     return jsonify(ok=True)
 
 
@@ -2410,7 +2198,7 @@ def get_plan(pid):
     if status == "processing" and time.time() - p.get("build_started", 0) > 150:  # the build function was cut off
         status, error = "error", "That took too long. Please press the button to try again."
     return jsonify(status=status, kind=p["kind"], error=error, course=p["course"], units=p["units"], files=material_files(p),
-                   banks=p.get("banks") or {}, linked=bool(p.get("chat_id")), schedule=describe_schedule(p),
+                   banks=p.get("banks") or {}, linked=bool(p.get("chat_id")), how=describe_plan(p),
                    link=f"https://t.me/{bot_username()}?start={pid}" if bot_username() else None)
 
 
@@ -2430,7 +2218,7 @@ if FRONTEND_DIR.exists():  # serve the website too, so one command runs everythi
 
 
 def run_local():
-    """Local development: Telegram can't reach your computer, so poll for messages and tick the scheduler ourselves."""
+    """Local development: Telegram can't reach your computer, so poll for messages instead of using the webhook."""
     import threading
     if os.getenv("LOCAL_NO_TELEGRAM"):  # just the website and API, to try the pages without touching any bot
         db.ensure_schema()
@@ -2461,16 +2249,7 @@ def run_local():
                 print("poll error:", e, flush=True)
                 time.sleep(5)
 
-    def tick():
-        while True:
-            try:
-                cron_tick(start_by=600)
-            except Exception as e:
-                print("tick error:", e, flush=True)
-            time.sleep(20)
-
     threading.Thread(target=poll, daemon=True).start()
-    threading.Thread(target=tick, daemon=True).start()
     app.run(host=os.getenv("HOST", "127.0.0.1"), port=PORT)
 
 

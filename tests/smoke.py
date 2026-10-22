@@ -7,9 +7,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 tmp = tempfile.mkdtemp()
 if "pg" in sys.argv:
@@ -80,8 +78,7 @@ def post(url, body, ip="1.1.1.1"):
     return c.post(url, json=body, headers={**H, "X-Forwarded-For": ip})
 
 
-PLAN = {"kind": "custom", "topic": "Chess openings", "mode": "teach_test", "size": "section", "depth": "standard", "nq": 3,
-        "days": [0, 1, 2, 3, 4, 5, 6], "time": "18:00", "tz": "UTC"}
+PLAN = {"kind": "custom", "topic": "Chess openings", "mode": "teach_test", "size": "section", "depth": "standard", "nq": 3}
 
 
 def upd(uid, chat, text, typ="private"):
@@ -95,7 +92,7 @@ def webhook(u, secret=None):
 print("engine:", "postgres" if db.IS_PG else "sqlite")
 print("basics and cross-site access")
 r = c.get("/api/health")
-check("health reports the setup", r.status_code == 200 and r.get_json()["ai"] and r.get_json()["cron"])
+check("health reports the setup", r.status_code == 200 and r.get_json()["ai"])
 r = c.options("/api/plans", headers={"Origin": "https://front.example", "Access-Control-Request-Method": "POST"})
 check("the website's address is allowed to call the API", r.status_code == 204 and r.headers["Access-Control-Allow-Origin"] == "https://front.example")
 r = c.options("/api/plans", headers={"Origin": "https://evil.example"})
@@ -105,7 +102,7 @@ print("building a plan: choices, uploads, build")
 r = post("/api/plans", PLAN)
 pid = r.get_json()["id"]
 check("plan is created", r.status_code == 200 and db.PLANS[pid]["status"] == "new" and db.PLANS[pid]["chat_id"] is None)
-check("bad choices rejected", post("/api/plans", {**PLAN, "days": []}).status_code == 400 and post("/api/plans", {**PLAN, "kind": "x"}).status_code == 400)
+check("bad choices rejected", post("/api/plans", {**PLAN, "length": "lots"}).status_code == 400 and post("/api/plans", {**PLAN, "kind": "x"}).status_code == 400)
 r = post(f"/api/plans/{pid}/build", {})
 check("custom plan builds with no uploads", r.get_json()["status"] == "ready" and len(db.PLANS[pid]["units"]) == 2)
 check("the build is skipped if it's already done", post(f"/api/plans/{pid}/build", {}).get_json()["status"] == "ready")
@@ -363,22 +360,21 @@ check("a language lesson keeps its sections apart, plays the dialogue as one cli
       "\n\n🎧" in txt and "###" not in txt and phs[0].get("dialogue") and "你好" in phs[0]["text"] and len(phs) == 3 and phs[1]["pron"] == "nǐ hǎo")
 
 # a conversation question, answered by typing and by voice
-lid = c.post("/api/plans", json=dict(PLAN, kind="language", language="Mandarin", level="Beginner", duration="1m", days=[0, 2, 4])).get_json()["id"]
-check("a 1-month plan on 3 days a week is 6 lessons (12 sessions), and says so",
-      db.PLANS[lid]["target_lessons"] == 6 and db.PLANS[lid]["total_sessions"] == 12 and db.PLANS[lid]["duration"] == "1m"
-      and db.PLANS[lid]["qtypes"] == ["talk", "say", "listen"])
+lid = c.post("/api/plans", json=dict(PLAN, kind="language", language="Mandarin", level="Beginner", length=6)).get_json()["id"]
+check("a 6-lesson plan is 6 lessons (12 sessions, a lesson then its quiz), and says so",
+      db.PLANS[lid]["target_lessons"] == 6 and db.PLANS[lid]["total_sessions"] == 12
+      and db.PLANS[lid]["qtypes"] == ["talk", "say", "listen"] and "6 lessons" in A.describe_plan(db.PLANS[lid]))
 check("keep-going plans have no end and start with a first batch",
-      (lambda i: db.PLANS[i]["total_sessions"] is None and db.PLANS[i]["target_lessons"] is None)(
-          c.post("/api/plans", json=dict(PLAN, duration="forever", topic="Finance")).get_json()["id"]))
-big = c.post("/api/plans", json=dict(PLAN, duration="3m", days=[0, 1, 2, 3, 4], topic="Finance")).get_json()["id"]
+      (lambda i: db.PLANS[i]["total_sessions"] is None and db.PLANS[i]["target_lessons"] is None and db.PLANS[i]["lessons"] == 10)(
+          c.post("/api/plans", json=dict(PLAN, length="forever", topic="Finance")).get_json()["id"]))
+big = c.post("/api/plans", json=dict(PLAN, length=32, topic="Finance")).get_json()["id"]
 check("a long plan writes a first batch and the rest as you go", db.PLANS[big]["target_lessons"] == 32 and db.PLANS[big]["lessons"] == 12
       and db.PLANS[big]["total_sessions"] == 64)
+qo = c.post("/api/plans", json=dict(PLAN, length=5, mode="test_only", topic="Cooking")).get_json()["id"]
+check("a quiz-only plan is one session per topic", db.PLANS[qo]["total_sessions"] == 5)
+check("a silly length is refused", c.post("/api/plans", json=dict(PLAN, length=0, topic="Cooking")).status_code == 400)
 UN = [dict(week=None, title=f"Lesson {i}", summary="s", files=[]) for i in range(1, 4)]
-cu = c.post("/api/plans", json=dict(PLAN, duration="custom", duration_days=10, days=[0, 2, 4], topic="Cooking")).get_json()["id"]
-check("a custom length (10 days, 3 days a week) is about 4 sessions, 2 lessons", db.PLANS[cu]["target_lessons"] == 2
-      and db.PLANS[cu]["total_sessions"] == 4 and db.PLANS[cu]["duration_days"] == 10 and "for 10 days" in A.describe_schedule(db.PLANS[cu]))
-check("a custom length needs a number", c.post("/api/plans", json=dict(PLAN, duration="custom", topic="Cooking")).status_code == 400)
-db.update_plan(lid, units=UN, status="ready", chat_id=88, language="zh-CN", voice=True, course="Mandarin", step=0, last_sent=None)
+db.update_plan(lid, units=UN, status="ready", chat_id=88, language="zh-CN", voice=True, course="Mandarin", step=0)
 sent.clear()
 A.send_voice_clip = lambda chat, plan, text, caption="": sent.append(("clip", text))
 TALK = dict(type="talk", q="A classmate greets you. Greet them back.", line="你好！", pron="nǐ hǎo", meaning="Hello", answer="你好 | nǐ hǎo | Hello")
@@ -411,34 +407,36 @@ db.update_plan(lid, pending=None)
 print("duration: keep going, or finish")
 _titles = iter(range(100, 200))
 A.ask_json = lambda system, user, max_tokens=0, temperature=None, audio=None: {"units": [dict(title=f"New {next(_titles)}", summary="s") for _ in range(10)]}
-db.update_plan(lid, units=UN, target_lessons=6, total_sessions=12, duration="1m", step=3, finished=False)
+db.update_plan(lid, units=UN, target_lessons=6, total_sessions=12, duration=None, step=3, finished=False)
 A.maybe_extend(db.PLANS[lid])
 check("when the lessons run low, the next ones are written (only up to the plan's length)", len(db.PLANS[lid]["units"]) == 6)
 db.update_plan(lid, units=UN, duration="forever", target_lessons=None, total_sessions=None, step=5)
 A.maybe_extend(db.PLANS[lid])
 check("with no end date, ten more are added each time", len(db.PLANS[lid]["units"]) == 13)
-db.update_plan(lid, units=UN, duration="1m", target_lessons=6, total_sessions=12, step=12, finished=False)
+db.update_plan(lid, units=UN, duration=None, target_lessons=6, total_sessions=12, step=12, finished=False)
 sent.clear()
 A.deliver_next(db.PLANS[lid])
 check("at the end of the chosen length the learner is congratulated and offered more", db.PLANS[lid]["finished"]
       and any("finished your plan" in t for c_, t in sent) and db.PLANS[lid]["step"] == 12)
-_due = c.get("/api/cron?key=cs").get_json()
-check("a finished plan is not sent anything more", not any(chat == 88 and "Lesson" in str(t) for chat, t in sent[1:]))
+sent.clear()
+A.deliver_next(db.PLANS[lid])
+check("/next on a finished plan sends no lesson, just the offer to carry on", not any("Lesson" in str(t) for chat, t in sent)
+      and any("finished your plan" in t for c_, t in sent))
 def ext_tap(uid, data):
     return webhook({"update_id": uid, "callback_query": {"id": f"e{uid}", "data": data,
                     "message": {"message_id": uid, "chat": {"id": 88, "type": "private"}}}})
-ext_tap(980, "ext:1m")
+ext_tap(980, "ext:more")
 pl = db.PLANS[lid]
-check("'1 more month' adds sessions and carries on", not pl["finished"] and pl["total_sessions"] == 12 + 12 and pl["target_lessons"] == 6 + 6)
+check("'10 more lessons' adds sessions and carries on", not pl["finished"] and pl["total_sessions"] == 12 + 20 and pl["target_lessons"] == 6 + 10)
 db.update_plan(lid, finished=True)
 ext_tap(981, "ext:forever")
 pl = db.PLANS[lid]
 check("'keep going' removes the end date", not pl["finished"] and pl["total_sessions"] is None and pl["duration"] == "forever")
-db.update_plan(lid, finished=True, paused=False)
+db.update_plan(lid, finished=True)
+sent.clear()
 ext_tap(982, "ext:stop")
-check("'that's enough' pauses the plan", db.PLANS[lid]["paused"] is True)
+check("'that's enough' leaves the plan finished, with a way back", db.PLANS[lid]["finished"] and any("/next" in t for c_, t in sent))
 A.ask_json = _old_aj3
-db.update_plan(lid, paused=False)
 
 print("voices")
 _calls = []
@@ -494,65 +492,23 @@ ts = [threading.Thread(target=lambda i=i: webhook(upd(20 + i, 55, "/plan"))) for
 A.handle_update = orig
 check("one chat is handled one message at a time", all(order[i][0] == "in" and order[i + 1] == ("out", order[i][1]) for i in range(0, 6, 2)))
 
-print("the scheduler (cron)")
-check("cron needs the secret", c.get("/api/cron").status_code == 403 and c.get("/api/cron?key=wrong").status_code == 403)
-
-
-def schedule(minutes_from_now, tz="UTC"):
-    t = datetime.now(ZoneInfo(tz)) + timedelta(minutes=minutes_from_now)
-    return dict(days=list(range(7)), time=t.strftime("%H:%M"), tz=tz)
-
-
-db.update_plan(pid, pending=None, step=0, last_sent=None, schedule=schedule(-3))
+print("sessions on demand")
+db.update_plan(pid, pending=None, step=0)
 sent.clear()
-r = c.get("/api/cron?key=cs").get_json()
-check("a due session is sent", r["sent"] == 1 and any("Lesson 1" in t for c_, t in sent) and db.PLANS[pid]["step"] == 1)
-print("a failed scheduled session is retried quietly")
-db.update_plan(pid, pending=None, step=0, last_sent=None, schedule=schedule(-3))
-_fail = {"n": 0}
-_old_get_prepared = A.get_prepared
-
-
-def failing_prepared(plan, step):
-    _fail["n"] += 1
-    raise RuntimeError("boom")
-
-
-A.get_prepared = failing_prepared
+webhook(upd(40, 55, "/next"))
+check("/next sends the first lesson and moves the plan on", any("Lesson 1" in t for c_, t in sent) and db.PLANS[pid]["step"] == 1)
 sent.clear()
-c.get("/api/cron?key=cs")
-check("the first failure says nothing to the learner and frees the slot", not any("couldn't prepare" in t for c_, t in sent)
-      and db.PLANS[pid]["last_sent"] is None and db.PLANS[pid]["step"] == 0)
-c.get("/api/cron?key=cs")
-c.get("/api/cron?key=cs")
-check("after the retries it tells the learner once, plainly", sum("couldn't prepare" in t for c_, t in sent) == 1
-      and "boom" not in " ".join(t for c_, t in sent))
-A.get_prepared = _old_get_prepared
-db.update_plan(pid, last_sent=None, step=0)
+webhook(upd(41, 55, "/next"))
+check("and /next again sends its quiz", any("Quiz" in t for c_, t in sent) and db.PLANS[pid]["pending"] is not None)
+db.update_plan(pid, pending=None)
+_old_build = A.build_session
+A.build_session = lambda plan, step: (_ for _ in ()).throw(RuntimeError("boom"))
 sent.clear()
-c.get("/api/cron?key=cs")
-check("and once the AI is back the session is sent", any("Lesson 1" in t for c_, t in sent))
-
-sent.clear()
-r = c.get("/api/cron", headers={"Authorization": "Bearer cs"}).get_json()
-check("and not sent twice in a day (Vercel-style auth header works too)", r["sent"] == 0 and sent == [])
-db.update_plan(pid, last_sent=None, schedule=schedule(-1))
-res = []
-ts = [threading.Thread(target=lambda: res.append(c.get("/api/cron?key=cs").get_json()["sent"])) for _ in range(4)]
-[t.start() for t in ts]
-[t.join() for t in ts]
-check("four pingers at the same moment: exactly one sends", sum(res) == 1)
-
-print("writing sessions ahead of time")
-db.update_plan(pid, last_sent=None, schedule=schedule(+6), step=1)
-ai_calls.clear()
-r = c.get("/api/cron?key=cs").get_json()
-check("shortly before a session it's prepared", r["prepared"] == 1 and db.cache_get(f"prep:{pid}:1") is not None)
-ai_calls.clear()
-db.update_plan(pid, schedule=schedule(-1))
-sent.clear()
-c.get("/api/cron?key=cs")
-check("and sent from the prepared copy without asking the AI again", any("Quiz" in t for c_, t in sent) and "json" not in ai_calls[:1] and db.cache_get(f"prep:{pid}:1") is None)
+webhook(upd(42, 55, "/next"))
+check("a failed session tells the learner plainly and doesn't move the plan on", any("couldn't prepare" in t for c_, t in sent)
+      and "boom" not in " ".join(t for c_, t in sent) and db.PLANS[pid]["step"] == 2)
+A.build_session = _old_build
+check("there is no timed scheduler endpoint any more", c.get("/api/cron").status_code == 404)
 
 print("the AI call and the daily cap")
 calls = []

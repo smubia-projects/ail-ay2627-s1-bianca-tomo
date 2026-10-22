@@ -6,7 +6,7 @@ if(!/^https?:\/\//.test(API))API="";
 API=API.replace(/\/$/,"");
 
 
-const S={exam:[],practice:[],kind:null,mode:"teach_test",size:"section",depth:"standard",days:new Set([0,2,4]),outline:null,slides:[],cfiles:[],lfiles:[],biwsMods:new Set(),biwsDefaults:false,level:"Beginner",focus:new Set(["Everyday conversation"]),step:-1};
+const S={exam:[],practice:[],kind:null,mode:"teach_test",size:"section",depth:"standard",outline:null,slides:[],cfiles:[],lfiles:[],biwsMods:new Set(),biwsDefaults:false,level:"Beginner",focus:new Set(["Everyday conversation"]),step:-1};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 
 function show(n){
@@ -18,7 +18,7 @@ function show(n){
              section:b?"A condensed lesson of about 350 to 450 words: one main idea with the guide's example.":null,
              topic:b?"The guide itself, word for word, with its tables and screenshots. The longest and most complete.":null};
     $$("[data-size] span").forEach(sp=>{const k=sp.parentElement.dataset.size;if(!sp.dataset.orig)sp.dataset.orig=sp.textContent;sp.textContent=d[k]||sp.dataset.orig});
-    if(b&&!S.biwsDefaults){S.biwsDefaults=true;S.size="topic";$$("[data-size]").forEach(x=>x.classList.toggle("sel",x.dataset.size==="topic"));S.days=new Set([0,1,2,3,4,5]);$$("#days .chip").forEach((c,i)=>c.classList.toggle("sel",S.days.has(i)));$("#time").value="17:00";$("#nq").value=3}
+    if(b&&!S.biwsDefaults){S.biwsDefaults=true;S.size="topic";$$("[data-size]").forEach(x=>x.classList.toggle("sel",x.dataset.size==="topic"));$("#nq").value=3}
   }
   $$("#steps .st em")[1].textContent=S.kind==="biws"?"Modules":"Material";
   if(n===2){renderQtypes();$("#dur-block").classList.toggle("hide",S.kind==="smu"||S.kind==="biws");durHint()}
@@ -69,38 +69,26 @@ function renderQtypes(){
     c.onclick=()=>{if(S.qtypes.has(k)){if(S.qtypes.size>1)S.qtypes.delete(k)}else S.qtypes.add(k);c.classList.toggle("sel",S.qtypes.has(k))};
     $("#qtypes").append(c)});
 }
-S.dur="1m";
-const WEEKS={"1w":1,"2w":2,"1m":4,"3m":13};
-function customDays(){
-  const d=$("#dur-date").value;
-  if(d){const diff=Math.ceil((new Date(d+"T23:59:59")-new Date())/86400000);return Math.max(1,Math.min(730,diff))}
-  const n=Math.max(1,parseInt($("#dur-n").value)||1),u={d:1,w:7,m:30}[$("#dur-unit").value];
-  return Math.max(1,Math.min(730,n*u));
+S.dur="10";
+// how long the plan runs: a number of lessons, or "forever" (new lessons are written as you go)
+function planLength(){
+  if(S.dur==="forever")return "forever";
+  if(S.dur==="other")return Math.max(1,Math.min(200,parseInt($("#dur-n").value)||1));
+  return +S.dur;
 }
 function durHint(){
   const el=$("#dur-hint");if(!el)return;
   $("#dur-other").classList.toggle("hide",S.dur!=="other");
-  if(S.dur==="other"){
-    const days=customDays(),sessions=Math.max(2,Math.round(days*S.days.size/7)),lessons=S.mode==="teach_test"?Math.max(2,Math.floor(sessions/2)):sessions;
-    el.textContent=S.days.size?`${days} days on your days is about ${sessions} sessions: ${S.mode==="teach_test"?lessons+" lessons, each followed by a quiz":lessons+" quizzes"}. At the end you can add more time or keep going.`:"Pick at least one day.";
-    return}
-  if(S.dur==="forever"){el.textContent="I'll keep writing new lessons as you go, building on what you've learned and what you find hard, until you pause it.";return}
-  const sessions=WEEKS[S.dur]*S.days.size, lessons=S.mode==="teach_test"?Math.max(2,Math.floor(sessions/2)):Math.max(2,sessions);
-  el.textContent=S.days.size?`That's about ${sessions} sessions on your days: ${S.mode==="teach_test"?lessons+" lessons, each followed by a quiz":lessons+" quizzes"}. At the end you can add another month or keep going with no end date.`:"Pick at least one day.";
+  if(S.dur==="forever"){el.textContent="I'll keep writing new lessons as you go, building on what you've learned and what you find hard.";return}
+  const n=planLength();
+  el.textContent=S.mode==="teach_test"?`${n} lessons, each followed by a quiz: ${2*n} sessions, one each time you send /next. At the end you can add more or keep going.`
+    :`${n} quizzes, one each time you send /next. At the end you can add more or keep going.`;
 }
-["#dur-n","#dur-unit"].forEach(s=>$(s).oninput=()=>{$("#dur-date").value="";durHint()});
-$("#dur-date").oninput=durHint;
+$("#dur-n").oninput=durHint;
 $$("[data-dur]").forEach(b=>b.onclick=()=>{S.dur=b.dataset.dur;$$("[data-dur]").forEach(x=>x.classList.toggle("sel",x===b));durHint()});
 $$("[data-depth]").forEach(b=>b.onclick=()=>{S.depth=b.dataset.depth;$$("[data-depth]").forEach(x=>x.classList.toggle("sel",x===b))});
-// mode, days, tz
+// mode
 $$("[data-mode]").forEach(b=>b.onclick=()=>{S.mode=b.dataset.mode;$$("[data-mode]").forEach(x=>x.classList.toggle("sel",x===b));durHint()});
-["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].forEach((d,i)=>{
-  const c=document.createElement("button");c.className="chip"+(S.days.has(i)?" sel":"");c.textContent=d;
-  c.onclick=()=>{S.days.has(i)?S.days.delete(i):S.days.add(i);c.classList.toggle("sel");durHint()};$("#days").append(c)});
-const zones=Intl.supportedValuesOf?Intl.supportedValuesOf("timeZone"):["Asia/Singapore"];
-const mine=Intl.DateTimeFormat().resolvedOptions().timeZone;
-if(!zones.includes(mine))zones.unshift(mine);
-$("#tz").innerHTML=zones.map(z=>`<option${z===mine?" selected":""}>${z}</option>`).join("");
 
 // Breaking Into Wall Street is copyrighted, so online it only appears for someone who enters the private access code
 const biwsHeaders=()=>{let c="";try{c=sessionStorage.getItem("biws-code")||""}catch(e){}return c?{"X-Biws-Code":c}:{}};
@@ -152,12 +140,11 @@ async function sendFiles(id){
 
 $("#create").onclick=async()=>{
   $("#err").textContent="";
-  if(!S.days.size){$("#err").textContent="Pick at least one day.";return}
-  const body={kind:S.kind,mode:S.mode,size:S.size,depth:S.depth,nq:Math.min(15,Math.max(2,parseInt($("#nq").value)||5)),qtypes:[...S.qtypes],days:[...S.days],time:$("#time").value,tz:$("#tz").value};
+  const body={kind:S.kind,mode:S.mode,size:S.size,depth:S.depth,nq:Math.min(15,Math.max(2,parseInt($("#nq").value)||5)),qtypes:[...S.qtypes]};
   if(S.kind==="smu"){body.notes=$("#notes").value}
   else if(S.kind==="biws"){Object.assign(body,{modules:[...S.biwsMods],optional:$("#biws-opt-days").checked,start:+$("#biws-start").value||1,notes:$("#biws-notes").value})}
-  else if(S.kind==="language"){Object.assign(body,{language:$("#lang").value,level:S.level,focus:[...S.focus].join(", ")||"Everyday conversation",scope:$("#lnotes").value,duration:S.dur==="other"?"custom":S.dur,duration_days:customDays()})}
-  else{Object.assign(body,{topic:$("#topic").value,scope:$("#scope").value,duration:S.dur==="other"?"custom":S.dur,duration_days:customDays()})}
+  else if(S.kind==="language"){Object.assign(body,{language:$("#lang").value,level:S.level,focus:[...S.focus].join(", ")||"Everyday conversation",scope:$("#lnotes").value,length:planLength()})}
+  else{Object.assign(body,{topic:$("#topic").value,scope:$("#scope").value,length:planLength()})}
   $("#create").disabled=true;
   try{
     const r=await fetch(API+"/api/plans",{method:"POST",headers:{...JSONH,...biwsHeaders()},body:JSON.stringify(body)});const j=await r.json();
@@ -217,7 +204,7 @@ async function poll(id){
   $("#working").classList.add("hide");
   if(p.status==="error"){$("#failed").classList.remove("hide");$("#ferr").textContent=p.error;return}
   $("#done").classList.remove("hide");
-  $("#course").textContent=p.course;$("#sched").textContent=p.schedule;
+  $("#course").textContent=p.course;$("#sched").textContent=p.how;
   UNITS=p.units;FILES=p.files||[];renderUnits();
   $("#addu").classList.toggle("hide",p.kind==="biws");
   const b=p.banks||{};$("#banknote").textContent=(b.exam||b.practice)?"🎯 Quizzes will be built from variants and harder versions of your "+[b.exam&&b.exam.length+" past paper(s)",b.practice&&b.practice.length+" practice file(s)"].filter(Boolean).join(" and ")+", within each topic.":"";
