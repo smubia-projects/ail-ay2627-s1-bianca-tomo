@@ -33,7 +33,9 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-3.1-flash-lite")
 LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "google/gemini-2.5-flash-lite")
-CRON_SECRET = os.getenv("CRON_SECRET", "")
+# Telegram calls this service (webhook mode): WEBHOOK_URL is this service's public URL + /api/telegram, and every call
+# carries TELEGRAM_WEBHOOK_SECRET in the X-Telegram-Bot-Api-Secret-Token header.
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 PORT = int(os.getenv("PORT", "5050"))
 AUDIO_GRADING = True  # voice notes are listened to by an audio-capable model (sent as an input_audio part)
 AUDIO_MODEL = os.getenv("LLM_AUDIO_MODEL", "google/gemini-3.5-flash-lite")
@@ -2013,7 +2015,35 @@ def biws_ok():
 
 
 def webhook_secret():
+    """TELEGRAM_WEBHOOK_SECRET, or (if unset) a value derived from the bot token so the webhook is never left open."""
     return os.getenv("TELEGRAM_WEBHOOK_SECRET") or hashlib.sha256(("webhook:" + TOKEN).encode()).hexdigest()[:40]
+
+
+def register_webhook():
+    """Point Telegram at WEBHOOK_URL, with the secret header. Runs once when the server starts; it only calls setWebhook
+    when the URL Telegram has differs, or when the secret changed since the last registration (Telegram never reveals
+    the secret, so a fingerprint of url+secret is kept in the database)."""
+    if not (TOKEN and WEBHOOK_URL):
+        print("Telegram webhook not registered (TELEGRAM_BOT_TOKEN or WEBHOOK_URL is unset).", flush=True)
+        return "skipped"
+    fp = hashlib.sha256(f"{WEBHOOK_URL}|{webhook_secret()}".encode()).hexdigest()[:16]
+    current = (tg("getWebhookInfo").get("result") or {}).get("url")
+    try:
+        known = (db.cache_get("telegram:webhook") or {}).get("fp") == fp
+    except Exception:
+        known = False
+    if current == WEBHOOK_URL and known:
+        return "unchanged"
+    r = tg("setWebhook", url=WEBHOOK_URL, secret_token=webhook_secret(), allowed_updates=["message", "callback_query"])
+    if not r.get("ok"):
+        print("setWebhook failed:", r, flush=True)
+        return "failed"
+    try:
+        db.cache_put("telegram:webhook", {"fp": fp})
+    except Exception as e:
+        print("couldn't remember the webhook fingerprint:", e, flush=True)
+    print("Telegram webhook registered:", WEBHOOK_URL, flush=True)
+    return "registered"
 
 
 def bot_username():
@@ -2032,13 +2062,6 @@ def client_ip():
     return (request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "?")
 
 
-def secret_ok():
-    if not CRON_SECRET:
-        return False
-    given = request.headers.get("X-Cron-Key") or request.args.get("key") or request.headers.get("Authorization", "").removeprefix("Bearer ")
-    return secrets.compare_digest(given, CRON_SECRET)
-
-
 @app.post("/api/telegram")
 def telegram_webhook():
     if not secrets.compare_digest(request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""), webhook_secret()):
@@ -2048,18 +2071,6 @@ def telegram_webhook():
     except Exception as e:  # always answer 200, or Telegram keeps re-sending the same update
         print("update failed:", e, flush=True)
     return "ok"
-
-
-@app.route("/api/setup", methods=["GET", "POST"])
-def setup():
-    """Point Telegram at this server. Open it once after deploying: /api/setup?key=YOUR_CRON_SECRET"""
-    if not secret_ok():
-        return jsonify(error="Not allowed. Open /api/setup?key=YOUR_CRON_SECRET (the CRON_SECRET you set)."), 403
-    if request.args.get("remove"):
-        return jsonify(tg("deleteWebhook"))
-    url = f"https://{request.host}/api/telegram"
-    r = tg("setWebhook", url=url, secret_token=webhook_secret(), allowed_updates=["message", "callback_query"])
-    return jsonify(webhook=url, telegram=r, info=tg("getWebhookInfo").get("result"), bot=bot_username())
 
 
 @app.get("/api/health")
@@ -2292,10 +2303,13 @@ def run_local():
         return app.run(host=os.getenv("HOST", "127.0.0.1"), port=PORT)
     if not TOKEN:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env first.")
+    if WEBHOOK_URL:
+        raise SystemExit("WEBHOOK_URL is set, so this looks like the deployed bot. Polling would remove its webhook: use a "
+                         "separate test bot locally (and leave WEBHOOK_URL empty), or set LOCAL_NO_TELEGRAM=1.")
     me = tg("getMe")
     if not me.get("ok"):
         raise SystemExit(f"Telegram rejected the token: {me}")
-    tg("deleteWebhook")  # a bot can use polling or a webhook, not both. Use a separate bot for local testing.
+    tg("deleteWebhook")  # a bot can use polling or a webhook, not both: local polling uses its own test bot
     db.ensure_schema()
     print(f"Bot: @{bot_username()}  |  http://localhost:{PORT}  |  database: {'postgres' if db.IS_PG else db.LOCAL_DB}", flush=True)
     if not llm:

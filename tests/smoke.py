@@ -18,7 +18,7 @@ else:
     os.environ["LOCAL_DB"] = str(Path(tmp) / "t.db")
 os.environ["NO_LEGACY_IMPORT"] = "1"
 os.environ.update(TELEGRAM_BOT_TOKEN="123:abc", OPENROUTER_API_KEY="k", LLM_MODEL="m1", UNOFFICIAL_TTS_ENABLED="",
-                  LLM_FALLBACK_MODEL="m2", CRON_SECRET="cs", FRONTEND_URL="https://front.example", TELEGRAM_BOT_USERNAME="TestBot",
+                  LLM_FALLBACK_MODEL="m2", FRONTEND_URL="https://front.example", TELEGRAM_BOT_USERNAME="TestBot",
                   DAILY_BUDGET_USD="1", BIWS_DIR=str(Path(tmp) / "none"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 import app as A  # noqa: E402
@@ -617,12 +617,33 @@ sent.clear()
 webhook(upd(30, 55, "explain this"))
 check("and the learner is told so, kindly", any("daily AI limit" in t for c_, t in sent))
 
-print("setup")
-check("setup needs the secret", c.get("/api/setup").status_code == 403)
-sent.clear()
-r = c.get("/api/setup?key=cs", headers={"Host": "my-backend.vercel.app"})
-hook = next(k for m, k in sent if m == "setWebhook")
-check("setup points Telegram at this server with a secret", hook["url"] == "https://my-backend.vercel.app/api/telegram" and hook["secret_token"] == A.webhook_secret())
+print("webhook registration")
+_hook = {"url": "", "sets": []}
+
+
+def hook_tg(method, **k):
+    if method == "getWebhookInfo":
+        return {"ok": True, "result": {"url": _hook["url"]}}
+    if method == "setWebhook":
+        _hook["url"] = k["url"]
+        _hook["sets"].append(k)
+    return {"ok": True, "result": True}
+
+
+A.tg = hook_tg
+A.WEBHOOK_URL = ""
+check("no WEBHOOK_URL: nothing is registered", A.register_webhook() == "skipped" and _hook["sets"] == [])
+A.WEBHOOK_URL = "https://tomo.example.run.app/api/telegram"
+check("on start-up the webhook is set with the secret header",
+      A.register_webhook() == "registered" and _hook["sets"][-1]["url"] == A.WEBHOOK_URL
+      and _hook["sets"][-1]["secret_token"] == A.webhook_secret())
+check("and not set again when nothing changed", A.register_webhook() == "unchanged" and len(_hook["sets"]) == 1)
+os.environ["TELEGRAM_WEBHOOK_SECRET"] = "new-secret"
+check("a new secret is registered again", A.register_webhook() == "registered" and _hook["sets"][-1]["secret_token"] == "new-secret")
+check("and the webhook checks the new secret", webhook(upd(50, 55, "/help"), secret="new-secret").status_code == 200
+      and webhook(upd(51, 55, "/help"), secret="old").status_code == 403)
+A.tg = fake_tg
+check("the old manual setup endpoint is gone", c.get("/api/setup").status_code == 404)
 
 print(f"\n{OK} passed, {BAD} failed")
 sys.exit(1 if BAD else 0)
