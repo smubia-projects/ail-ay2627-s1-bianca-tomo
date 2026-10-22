@@ -575,7 +575,7 @@ sent.clear()
 ai_calls.clear()
 webhook(upd(60, 55, "/next"))
 check("a Telegram learner over the limit gets the AI Lodge links (keyed on tg:<user id>) and no AI call",
-      any("smubia.com/ai-lodge" in t and "15" in t for c_, t in sent) and _rl_calls[-1] == ("tg:55", "session")
+      any("smubia.com/ailodge" in t and "15" in t for c_, t in sent) and _rl_calls[-1] == ("tg:55", "session")
       and db.PLANS[pid]["step"] == _step0 and not ai_calls)
 _rl["state"] = ("killed", None)
 sent.clear()

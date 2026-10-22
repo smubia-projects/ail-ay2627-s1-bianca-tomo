@@ -639,9 +639,9 @@ def bot_allowed(chat, bucket):
     if state == "limited":
         send(chat, f"🎓 You've used all {value} free {LIMIT_WHAT.get(bucket, 'AI requests')} in this TOMO demo for now.\n\n"
                    "TOMO was built in SMU BIA's AI Lodge. Want to build AI tools like this?\n"
-                   "- Join AI Lodge: https://www.smubia.com/ai-lodge\n"
-                   f"- Run your own TOMO: {GITHUB_URL}\n"
-                   "- Explore other projects: https://www.smubia.com/showcase")
+                   "- Join AI Lodge: https://www.smubia.com/ailodge\n"
+                   "- Explore other projects: https://www.smubia.com/Projects\n"
+                   f"- View on GitHub: {GITHUB_URL}")
         return False
     return True
 
