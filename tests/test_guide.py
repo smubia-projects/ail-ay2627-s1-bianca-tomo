@@ -22,7 +22,7 @@ items1 = [{"k": "p", "html": "<b>Key Rule #1</b>", "txt": "Key Rule #1", "head":
           {"k": "img", "path": "content/img/a.png"}]
 (src / "content" / "days" / "day_001.json").write_text(json.dumps(items1))
 (src / "content" / "days" / "day_002.json").write_text(json.dumps([items1[1]]))
-os.environ.update(TELEGRAM_BOT_TOKEN="1:x", LLM_API_KEY="k", CRON_SECRET="cs", BIWS_DIR=str(tmp / "not-here"), BIWS_ACCESS_CODE="open-sesame",
+os.environ.update(TELEGRAM_BOT_TOKEN="1:x", OPENROUTER_API_KEY="k", BIWS_DIR=str(tmp / "not-here"), BIWS_ACCESS_CODE="open-sesame",
                   TELEGRAM_BOT_USERNAME="TestBot")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 import app as A, biws, db, import_guide  # noqa: E402

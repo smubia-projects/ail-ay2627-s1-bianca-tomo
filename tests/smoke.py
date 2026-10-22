@@ -17,7 +17,7 @@ else:
     os.environ["DATABASE_URL"] = ""
     os.environ["LOCAL_DB"] = str(Path(tmp) / "t.db")
 os.environ["NO_LEGACY_IMPORT"] = "1"
-os.environ.update(TELEGRAM_BOT_TOKEN="123:abc", LLM_API_KEY="k", LLM_BASE_URL="https://llm.example/v1", LLM_MODEL="m1",
+os.environ.update(TELEGRAM_BOT_TOKEN="123:abc", OPENROUTER_API_KEY="k", LLM_MODEL="m1", UNOFFICIAL_TTS_ENABLED="",
                   LLM_FALLBACK_MODEL="m2", CRON_SECRET="cs", FRONTEND_URL="https://front.example", TELEGRAM_BOT_USERNAME="TestBot",
                   DAILY_BUDGET_USD="1", BIWS_DIR=str(Path(tmp) / "none"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
@@ -439,18 +439,58 @@ check("'that's enough' leaves the plan finished, with a way back", db.PLANS[lid]
 A.ask_json = _old_aj3
 
 print("voices")
+import base64 as _b64
+import math as _math
+import struct as _struct
+_pcm = b"".join(_struct.pack("<h", int(6000 * _math.sin(i / 8))) for i in range(4800))
+
+
+class _Stream:
+    status_code = 200
+    text = ""
+
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+    def iter_lines(self):
+        half = len(_pcm) // 2
+        for chunk in (_pcm[:half], _pcm[half:]):
+            yield b"data: " + json.dumps({"choices": [{"delta": {"audio": {"data": _b64.b64encode(chunk).decode()}}}]}).encode()
+        yield b"data: " + json.dumps({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 50}}).encode()
+        yield b"data: [DONE]"
+
+
+_tts_req = []
+_old_post = A._http.post
+A._http.post = lambda url, **k: _tts_req.append(k["json"]) or _Stream()
+mp3 = A._openrouter_tts("你好", "zh-CN")
+A._http.post = _old_post
+check("speech comes from the OpenRouter audio model, streamed as PCM and encoded to MP3",
+      mp3[:2] in (b"\xff\xf3", b"\xff\xfb", b"\xff\xf2") and len(mp3) > 500 and _tts_req[0]["stream"] is True
+      and _tts_req[0]["audio"]["format"] == "pcm16" and _tts_req[0]["modalities"] == ["text", "audio"])
 _calls = []
+def _or_fail(text, lang):
+    _calls.append("openrouter"); raise RuntimeError("down")
 def _edge_fail(text, lang):
     _calls.append("edge"); raise RuntimeError("blocked")
 def _google_ok(text, lang):
     _calls.append("google"); return b"x" * 900
-_e0, _g0 = A._edge_tts, A._google_tts
-A._edge_tts, A._google_tts = _edge_fail, _google_ok
-check("if the first voice fails, the backup is used", A.tts("你好", "zh-CN") == b"x" * 900 and _calls == ["edge", "google"])
+_o0, _e0, _g0 = A._openrouter_tts, A._edge_tts, A._google_tts
+A._openrouter_tts, A._edge_tts, A._google_tts = _or_fail, _edge_fail, _google_ok
+try:
+    A.tts("你好", "zh-CN"); _raised = False
+except RuntimeError:
+    _raised = True
+check("the unofficial free voices are off by default", _raised and _calls == ["openrouter"])
+A.UNOFFICIAL_TTS = True
+_calls.clear()
+check("switched on, they are the backup", A.tts("你好", "zh-CN") == b"x" * 900 and _calls == ["openrouter", "edge", "google"])
 _calls.clear()
 check("the same clip is not made twice", A.tts("你好", "zh-CN") == b"x" * 900 and _calls == [])
-check("and a voice that failed lately is not tried first next time", A.tts("再见", "zh-CN") == b"x" * 900 and _calls == ["google"])
-A._edge_tts, A._google_tts = _e0, _g0
+check("and a voice that failed lately is not tried first next time", A.tts("再见", "zh-CN") == b"x" * 900
+      and _calls == ["openrouter", "google"])
+A.UNOFFICIAL_TTS = False
+A._openrouter_tts, A._edge_tts, A._google_tts = _o0, _e0, _g0
 pb = A.practice_buttons(db.PLANS[pid])["inline_keyboard"]
 check("after practising a phrase there is still a way to the quiz", any(b["callback_data"].startswith("quiz:") for row in pb for b in row)
       and any(b["callback_data"] == "say:again" for row in pb for b in row))
@@ -523,7 +563,14 @@ A.ask = REAL_ASK
 A._http.post = fake_post
 ok_body = {"choices": [{"message": {"content": " hello "}}], "usage": {"prompt_tokens": 1000, "completion_tokens": 100}}
 script[:] = [R(200, ok_body)]
-check("a normal reply is returned", A.ask("s", "u") == "hello" and calls[-1] == ("https://llm.example/v1/chat/completions", "m1"))
+check("a normal reply is returned", A.ask("s", "u") == "hello" and calls[-1] == ("https://openrouter.ai/api/v1/chat/completions", "m1"))
+_bodies = []
+A._http.post = lambda url, **k: _bodies.append(k["json"]) or R(200, ok_body)
+A.ask("s", "u", audio=(b"OggS", "audio/ogg"))
+_part = _bodies[-1]["messages"][1]["content"][1]
+check("a voice note goes to the audio model as an input_audio part (base64, ogg)", _bodies[-1]["model"] == A.AUDIO_MODEL
+      and _part == {"type": "input_audio", "input_audio": {"data": "T2dnUw==", "format": "ogg"}})
+A._http.post = fake_post
 script[:] = [R(429, {}), R(200, ok_body)]
 check("a busy moment is retried once", A.ask("s", "u") == "hello")
 script[:] = [R(503, {}), R(503, {}), R(200, ok_body)]
