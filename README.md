@@ -71,7 +71,7 @@ second model after a short timeout.
 ## 5. External Tools & Datasets
 - **AI:** [OpenRouter](https://openrouter.ai). Defaults: `google/gemini-3.1-flash-lite` (text) with `google/gemini-2.5-flash-lite`
   as fallback; `google/gemini-3.5-flash-lite` / `google/gemini-2.5-flash` (listening to voice notes); `openai/gpt-audio-mini`
-  (speech). Configurable with `LLM_MODEL`, `LLM_FALLBACK_MODEL`, `LLM_AUDIO_MODEL`, `LLM_AUDIO_FALLBACK`, `TTS_MODEL`.
+  (speech). Configurable with `MODEL_NAME`, `FALLBACK_MODEL_NAME`, `AUDIO_MODEL_NAME`, `AUDIO_FALLBACK_MODEL_NAME`, `TTS_MODEL_NAME`.
 - **Platform:** Telegram Bot API (webhook), Google Cloud Run (Flask API), Vercel (website), Neon (serverless Postgres), Upstash
   Redis (the AI Lodge rate limiter).
 - **Backend:** Flask, gunicorn, requests, psycopg, python-dotenv, [json-repair](https://pypi.org/project/json-repair/), lameenc
@@ -89,7 +89,7 @@ and an [OpenRouter](https://openrouter.ai) API key.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
-cp backend/.env.example .env      # fill in TELEGRAM_BOT_TOKEN and OPENROUTER_API_KEY; leave DATABASE_URL and WEBHOOK_URL empty
+cp backend/.env.example .env      # fill in TELEGRAM_BOT_TOKEN and API_KEY; leave DATABASE_URL and WEBHOOK_URL empty
 cd backend && ../.venv/bin/python app.py    # API + bot (polling) at http://localhost:5050, local SQLite database
 cd frontend && npm install && npm run dev   # the website at http://localhost:5173 (calls http://localhost:5050)
 ```
