@@ -1,5 +1,5 @@
--- Study Buddy tables. Paste this whole file into Neon's SQL Editor and press Run.
--- It is safe to run more than once.
+-- TOMO tables. The backend runs this file automatically at start-up (db.ensure_schema), so an empty Neon database
+-- is all it needs. Every statement is idempotent, so it is safe to run more than once.
 
 -- one row per study plan (the plan itself is stored as JSON text)
 CREATE TABLE IF NOT EXISTS plans (

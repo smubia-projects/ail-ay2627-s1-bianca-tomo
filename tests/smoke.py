@@ -18,7 +18,7 @@ else:
     os.environ["LOCAL_DB"] = str(Path(tmp) / "t.db")
 os.environ["NO_LEGACY_IMPORT"] = "1"
 os.environ.update(TELEGRAM_BOT_TOKEN="123:abc", OPENROUTER_API_KEY="k", LLM_MODEL="m1", UNOFFICIAL_TTS_ENABLED="",
-                  LLM_FALLBACK_MODEL="m2", FRONTEND_URL="https://front.example", TELEGRAM_BOT_USERNAME="TestBot",
+                  LLM_FALLBACK_MODEL="m2", CORS_ORIGINS="https://front.example", TELEGRAM_BOT_USERNAME="TestBot",
                   DAILY_BUDGET_USD="1", BIWS_DIR=str(Path(tmp) / "none"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 import app as A  # noqa: E402
@@ -92,7 +92,8 @@ def webhook(u, secret=None):
 print("engine:", "postgres" if db.IS_PG else "sqlite")
 print("basics and cross-site access")
 r = c.get("/api/health")
-check("health reports the setup", r.status_code == 200 and r.get_json()["ai"])
+check("health reports the setup", r.status_code == 200 and r.get_json()["status"] == "ok" and r.get_json()["ai"])
+check("the backend serves no website (API only)", c.get("/").status_code == 404 and c.get("/src/main.js").status_code == 404)
 r = c.options("/api/plans", headers={"Origin": "https://front.example", "Access-Control-Request-Method": "POST"})
 check("the website's address is allowed to call the API", r.status_code == 204 and r.headers["Access-Control-Allow-Origin"] == "https://front.example")
 r = c.options("/api/plans", headers={"Origin": "https://evil.example"})

@@ -1,10 +1,13 @@
-"""Study Buddy backend (Flask), built to run on Vercel with a Neon Postgres database.
+"""TOMO study buddy backend (Flask): an API-only service on Google Cloud Run, with a Neon Postgres database.
 
-Serverless functions run only while a request is being handled, so nothing here keeps a thread or a file between requests:
-  * Telegram sends each message to /api/telegram (a webhook) and we answer it there.
+Cloud Run scales to zero and only gives CPU while a request is being handled, so nothing here keeps a thread or a file
+between requests:
+  * Telegram sends each message to /api/telegram (a webhook, registered at start-up from WEBHOOK_URL) and we answer it there.
   * Lessons and quizzes are sent on demand, when the learner sends /next (there is no timed scheduler).
   * Plans, the text of uploaded material and everything else live in the database (db.py).
-Run `python app.py` on your computer to develop: it uses a local SQLite file and polls Telegram instead of using a webhook.
+The website is a separate Vite app on Vercel. Production entry point: wsgi.py (gunicorn).
+Run `python app.py` on your computer to develop: it uses a local SQLite file and polls Telegram (with a separate test bot)
+instead of using a webhook.
 """
 import hashlib
 import html as _html
@@ -18,14 +21,12 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request
 
 import biws
 import db
 from db import BudgetExceeded, update_plan
 
-ROOT = Path(__file__).parent
-DATA = ROOT / "data"  # only used for the Wall Street guide's cache when you run it on your own computer
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 # Every AI call goes through OpenRouter (OpenAI-compatible chat completions). Model ids are OpenRouter ids.
@@ -1970,21 +1971,22 @@ def extend_plan(plan, how):
 
 
 # ---------------------------------------------------------------- web API
-ALLOWED_ORIGINS = {o.strip().rstrip("/") for o in (os.getenv("FRONTEND_URL", "") + ",http://localhost:5173,http://localhost:5050,"
-                                                    "http://127.0.0.1:5050").split(",") if o.strip()}
-FRONTEND_DIR = ROOT.parent / "frontend"  # present when you run everything on your own computer
+# The website's address(es), comma-separated (e.g. https://<project>.vercel.app). Unset = the local Vite dev server only.
+ALLOWED_ORIGINS = {o.strip().rstrip("/") for o in (os.getenv("CORS_ORIGINS") or "http://localhost:5173,http://127.0.0.1:5173")
+                   .split(",") if o.strip()}
 
 
 @app.before_request
 def _before():
     if request.method == "OPTIONS":  # the browser's permission check before a cross-site request
         return "", 204
-    if request.path.startswith("/api/"):
+    if request.path.startswith("/api/") and request.path != "/api/health":
         try:
-            db.ensure_schema()
+            db.ensure_schema()  # normally already done at start-up (wsgi.py); idempotent
         except Exception as e:
             print("database unavailable:", e, flush=True)
-            return jsonify(error="The database isn't reachable right now. Please try again in a moment."), 503
+            # 500, not 503: 503 is reserved for the rate limiter's "demo paused" switch
+            return jsonify(error="The database isn't reachable right now. Please try again in a moment."), 500
 
 
 @app.after_request
@@ -1993,7 +1995,7 @@ def _after(resp):
     if origin and (origin.rstrip("/") in ALLOWED_ORIGINS or "*" in ALLOWED_ORIGINS):
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Vary"] = "Origin"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Cron-Key, X-Biws-Code"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Biws-Code"
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     if request.path.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-store"
@@ -2075,8 +2077,7 @@ def telegram_webhook():
 
 @app.get("/api/health")
 def health():
-    db.q("SELECT 1 AS ok")
-    return jsonify(ok=True, ai=llm, bot=bool(TOKEN), database="postgres" if db.IS_PG else "sqlite")
+    return jsonify(status="ok", ai=llm, bot=bool(TOKEN), database="postgres" if db.IS_PG else "sqlite")
 
 
 @app.post("/api/plans")
@@ -2280,26 +2281,12 @@ def get_plan(pid):
 
 
 # ---------------------------------------------------------------- running on your own computer
-if FRONTEND_DIR.exists():  # serve the website too, so one command runs everything locally
-    @app.get("/")
-    def index():
-        return send_from_directory(FRONTEND_DIR, "index.html")
-
-    @app.get("/src/<path:p>")
-    def frontend_src(p):
-        return send_from_directory(FRONTEND_DIR / "src", p)
-
-    @app.get("/<path:p>")
-    def frontend_public(p):
-        return send_from_directory(FRONTEND_DIR / "public", p)
-
-
 def run_local():
     """Local development: Telegram can't reach your computer, so poll for messages instead of using the webhook."""
     import threading
-    if os.getenv("LOCAL_NO_TELEGRAM"):  # just the website and API, to try the pages without touching any bot
+    if os.getenv("LOCAL_NO_TELEGRAM"):  # just the API, to try the website without touching any bot
         db.ensure_schema()
-        print(f"Website and API only: http://localhost:{PORT}", flush=True)
+        print(f"API only: http://localhost:{PORT}  (run the website with `npm run dev` in frontend/)", flush=True)
         return app.run(host=os.getenv("HOST", "127.0.0.1"), port=PORT)
     if not TOKEN:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env first.")
@@ -2311,7 +2298,7 @@ def run_local():
         raise SystemExit(f"Telegram rejected the token: {me}")
     tg("deleteWebhook")  # a bot can use polling or a webhook, not both: local polling uses its own test bot
     db.ensure_schema()
-    print(f"Bot: @{bot_username()}  |  http://localhost:{PORT}  |  database: {'postgres' if db.IS_PG else db.LOCAL_DB}", flush=True)
+    print(f"Bot: @{bot_username()}  |  API http://localhost:{PORT}  |  database: {'postgres' if db.IS_PG else db.LOCAL_DB}", flush=True)
     if not llm:
         print("WARNING: OPENROUTER_API_KEY isn't set, so plans can't be built.", flush=True)
     pool = ThreadPoolExecutor(max_workers=6)
