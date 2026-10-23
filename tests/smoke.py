@@ -601,7 +601,7 @@ A.ask = REAL_ASK
 A._http.post = fake_post
 ok_body = {"choices": [{"message": {"content": " hello "}}], "usage": {"prompt_tokens": 1000, "completion_tokens": 100}}
 script[:] = [R(200, ok_body)]
-check("a normal reply is returned", A.ask("s", "u") == "hello" and calls[-1] == ("https://openrouter.ai/api/v1/chat/completions", "m1"))
+check("a normal reply is returned", A.ask("s", "u") == "hello" and calls[-1] == ("https://api.apiyi.com/v1/chat/completions", "m1"))
 _bodies = []
 A._http.post = lambda url, **k: _bodies.append(k["json"]) or R(200, ok_body)
 A.ask("s", "u", audio=(b"OggS", "audio/ogg"))
