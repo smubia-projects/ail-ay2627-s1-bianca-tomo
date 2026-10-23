@@ -31,19 +31,20 @@ from rate_limit import check_telegram, check_web, client_ip
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 # Every AI call goes through OpenRouter (OpenAI-compatible chat completions). Model ids are OpenRouter ids.
-OPENROUTER_BASE_URL = (os.getenv("API_BASE_URL", "").strip() or os.getenv("OPENROUTER_BASE_URL", "").strip() or "https://openrouter.ai/api/v1").rstrip("/")
+OPENROUTER_BASE_URL = (os.getenv("API_BASE_URL", "").strip() or os.getenv("OPENROUTER_BASE_URL", "").strip() or "https://api.apiyi.com/v1").rstrip("/")
 OPENROUTER_API_KEY = (os.getenv("API_KEY", "").strip() or os.getenv("OPENROUTER_API_KEY", ""))
-LLM_MODEL = (os.getenv("MODEL_NAME", "").strip() or os.getenv("LLM_MODEL", "google/gemini-3.1-flash-lite"))
-LLM_FALLBACK_MODEL = (os.getenv("FALLBACK_MODEL_NAME", "").strip() or os.getenv("LLM_FALLBACK_MODEL", "google/gemini-2.5-flash-lite"))
+LLM_MODEL = (os.getenv("MODEL_NAME", "").strip() or os.getenv("LLM_MODEL", "gemini-3.1-flash-lite"))
+LLM_FALLBACK_MODEL = (os.getenv("FALLBACK_MODEL_NAME", "").strip() or os.getenv("LLM_FALLBACK_MODEL", "gemini-3.5-flash-lite"))
 # Telegram calls this service (webhook mode): WEBHOOK_URL is this service's public URL + /api/telegram, and every call
 # carries TELEGRAM_WEBHOOK_SECRET in the X-Telegram-Bot-Api-Secret-Token header.
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 PORT = int(os.getenv("PORT", "5050"))
 AUDIO_GRADING = True  # voice notes are listened to by an audio-capable model (sent as an input_audio part)
-AUDIO_MODEL = (os.getenv("AUDIO_MODEL_NAME", "").strip() or os.getenv("LLM_AUDIO_MODEL", "google/gemini-3.5-flash-lite"))
-AUDIO_FALLBACK = (os.getenv("AUDIO_FALLBACK_MODEL_NAME", "").strip() or os.getenv("LLM_AUDIO_FALLBACK", "google/gemini-2.5-flash"))
-# Spoken clips (phrases, dialogues, listening questions): an audio-output model on OpenRouter. Empty TTS_MODEL = no audio.
-TTS_MODEL = (os.getenv("TTS_MODEL_NAME", "").strip() or os.getenv("TTS_MODEL", "openai/gpt-audio-mini"))
+AUDIO_MODEL = (os.getenv("AUDIO_MODEL_NAME", "").strip() or os.getenv("LLM_AUDIO_MODEL", "gemini-3.5-flash-lite"))
+AUDIO_FALLBACK = (os.getenv("AUDIO_FALLBACK_MODEL_NAME", "").strip() or os.getenv("LLM_AUDIO_FALLBACK", "gemini-3.5-flash-lite"))
+# Spoken clips (phrases, dialogues, listening questions): an audio-output model. Off unless TTS_MODEL_NAME is set, since
+# the club's gateway (apiyi) offers none; without it listening questions show the line behind a spoiler.
+TTS_MODEL = (os.getenv("TTS_MODEL_NAME", "").strip() or os.getenv("TTS_MODEL", ""))
 TTS_VOICE = os.getenv("TTS_VOICE", "alloy")
 # The student's original free voices (Microsoft Edge's read-aloud service via edge-tts, and Google Translate's speech
 # endpoint) are unofficial, unauthenticated endpoints, so they are off unless explicitly switched on.

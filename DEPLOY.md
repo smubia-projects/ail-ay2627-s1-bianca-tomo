@@ -49,9 +49,9 @@ cd frontend && npm install && npm run dev  # website on :5173
 Polling refuses to start when `WEBHOOK_URL` is set, so a local run can't knock the deployed bot off its webhook.
 
 ## Voice
-- **Listening to voice notes** (pronunciation coaching, spoken replies): `LLM_AUDIO_MODEL` on OpenRouter, sent as `input_audio`.
-- **Speech** (phrases, dialogues, listening questions): `TTS_MODEL` (default `openai/gpt-audio-mini`), streamed as PCM and encoded
-  to MP3. Set `TTS_MODEL=` to switch audio off; listening questions then show the line behind a spoiler.
+- **Listening to voice notes** (pronunciation coaching, spoken replies): `AUDIO_MODEL_NAME` (default `gemini-3.5-flash-lite`), sent as `input_audio`.
+- **Speech** (phrases, dialogues, listening questions): `TTS_MODEL_NAME`, an audio-output model, streamed as PCM and encoded
+  to MP3. Unset by default because apiyi has no such model; listening questions then show the line behind a spoiler.
 - The original free voices (Microsoft Edge read-aloud via `edge-tts`, Google Translate TTS) are unofficial endpoints and stay off
   unless `UNOFFICIAL_TTS_ENABLED=true`.
 
@@ -71,6 +71,6 @@ cd backend && DATABASE_URL=... ../.venv/bin/python import_guide.py --src ~/ibig-
 | The bot doesn't answer | Cloud Run logs for `Telegram webhook registered` / `setWebhook failed`; `WEBHOOK_URL` must end in `/api/telegram`. |
 | "Conflict: terminated by other getUpdates" | Something is polling with the same token (a local run with the club's bot). Use a separate test bot. |
 | The website can't reach the server | `VITE_API_BASE` (rebuild after changing it) and `CORS_ORIGINS` (must match the Vercel address exactly). |
-| `/api/health` says `"ai": false` | `OPENROUTER_API_KEY` is missing from `DOTENV`. |
-| No audio clips | `TTS_MODEL` is empty or the model failed (logs: `voice failed`). |
+| `/api/health` says `"ai": false` | `API_KEY` is missing from `DOTENV`. |
+| No audio clips | Expected: `TTS_MODEL_NAME` is unset (apiyi has no voice model). If it is set, the model failed (logs: `voice failed`). |
 | "daily AI limit" message | The day's estimated spend hit `DAILY_BUDGET_USD`. |

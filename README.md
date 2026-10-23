@@ -69,9 +69,9 @@ AI; JSON answers are requested in strict mode, repaired if slightly broken, and 
 second model after a short timeout.
 
 ## 5. External Tools & Datasets
-- **AI:** [OpenRouter](https://openrouter.ai). Defaults: `google/gemini-3.1-flash-lite` (text) with `google/gemini-2.5-flash-lite`
-  as fallback; `google/gemini-3.5-flash-lite` / `google/gemini-2.5-flash` (listening to voice notes); `openai/gpt-audio-mini`
-  (speech). Configurable with `MODEL_NAME`, `FALLBACK_MODEL_NAME`, `AUDIO_MODEL_NAME`, `AUDIO_FALLBACK_MODEL_NAME`, `TTS_MODEL_NAME`.
+- **AI:** [apiyi](https://apiyi.com). Defaults: `gemini-3.1-flash-lite` (text) with `gemini-3.5-flash-lite`
+  as fallback; `gemini-3.5-flash-lite` (listening to voice notes). Spoken clips need an audio-output model, which apiyi
+  does not offer, so they are off and listening questions show the line behind a spoiler. Configurable with `MODEL_NAME`, `FALLBACK_MODEL_NAME`, `AUDIO_MODEL_NAME`, `AUDIO_FALLBACK_MODEL_NAME`, `TTS_MODEL_NAME`.
 - **Platform:** Telegram Bot API (webhook), Google Cloud Run (Flask API), Vercel (website), Neon (serverless Postgres), Upstash
   Redis (the AI Lodge rate limiter).
 - **Backend:** Flask, gunicorn, requests, psycopg, python-dotenv, [json-repair](https://pypi.org/project/json-repair/), lameenc
