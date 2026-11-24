@@ -15,7 +15,7 @@ const CTA={
   headline:"You've studied up a storm!",
   description:"This demo built {count} study plans for you. In SMU BIA's AI Lodge, you'll learn to build AI tutors like TOMO from scratch.",
   programme:"AI Lodge",programmeLink:"https://www.smubia.com/ailodge",
-  githubLink:"https://github.com/smubia-projects/ail-ay2627-s1-bianca-tomo",showcaseLink:"https://www.smubia.com/Projects",
+  githubLink:"https://github.com/smubia-projects/ail-ay2627-s1-bianca-tomo",showcaseLink:"https://www.smubia.com/projects",
 };
 class Handled extends Error{}  // a 429/503 that has already been shown to the user
 let lastFocus=null;
